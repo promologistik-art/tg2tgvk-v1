@@ -4,13 +4,13 @@ from telegram.ext import ContextTypes, ConversationHandler
 from sqlalchemy import select, delete
 from database import AsyncSessionLocal
 from models import User, SourceChannel
-from scraper import TelegramScraper
+from scrapers import TelegramScraper
 from utils import extract_channel_username
-from .utils import (
-    require_project, get_sources_count, get_project_target, 
-    send_project_ready_message, check_action_limit, check_user_access
+from .utils import require_project, get_sources_count, get_project_target, send_project_ready_message, check_action_limit, check_user_access
+from .constants import (
+    AWAITING_SOURCE_USERNAME, AWAITING_CRITERIA, AWAITING_VIEWS, AWAITING_REACTIONS,
+    AWAITING_MEDIA_FILTER, AWAITING_REMOVE_TEXT
 )
-from .constants import AWAITING_SOURCE_USERNAME, AWAITING_CRITERIA, AWAITING_VIEWS, AWAITING_REACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,11 @@ async def add_source_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not project:
         return ConversationHandler.END
     
-    # Проверяем доступ
     has_access, message, user = await check_user_access(telegram_id)
     if not has_access:
         await update.message.reply_text(message)
         return ConversationHandler.END
     
-    # Проверяем лимит источников
     can_add, limit_msg = await check_action_limit(user, "add_source", project_id=project.id)
     if not can_add and not user.is_admin:
         await update.message.reply_text(f"❌ {limit_msg}")
@@ -119,8 +117,21 @@ async def add_source_criteria(update: Update, context: ContextTypes.DEFAULT_TYPE
             "none": {}
         }.get(choice, {})
         
-        await save_source_with_criteria(query, context, temp, criteria)
-        return ConversationHandler.END
+        context.user_data['temp_criteria'] = criteria
+        
+        keyboard = [
+            [InlineKeyboardButton("📷 Все (фото + видео)", callback_data="media_all")],
+            [InlineKeyboardButton("🖼️ Только фото", callback_data="media_photo_only")],
+            [InlineKeyboardButton("🎬 Только видео", callback_data="media_video_only")],
+        ]
+        
+        await query.edit_message_text(
+            f"✅ Критерии выбраны\n\n"
+            f"Теперь выберите тип контента для @{temp['username']}:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        return AWAITING_MEDIA_FILTER
 
 
 async def criteria_views_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,21 +164,103 @@ async def criteria_reactions_input(update: Update, context: ContextTypes.DEFAULT
     if reactions > 0:
         criteria['min_reactions'] = reactions
     
+    context.user_data['temp_criteria'] = criteria
+    
+    keyboard = [
+        [InlineKeyboardButton("📷 Все (фото + видео)", callback_data="media_all")],
+        [InlineKeyboardButton("🖼️ Только фото", callback_data="media_photo_only")],
+        [InlineKeyboardButton("🎬 Только видео", callback_data="media_video_only")],
+    ]
+    
+    await update.message.reply_text(
+        f"✅ Критерии сохранены\n\n"
+        f"Теперь выберите тип контента:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML"
+    )
+    return AWAITING_MEDIA_FILTER
+
+
+async def media_filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора типа контента."""
+    query = update.callback_query
+    await query.answer()
+    
+    choice = query.data.replace("media_", "")
+    context.user_data['temp_media_filter'] = choice
+    
+    if choice in ("video_only", "all"):
+        keyboard = [
+            [InlineKeyboardButton("📏 До 1 минуты", callback_data="duration_60")],
+            [InlineKeyboardButton("📏 До 3 минут", callback_data="duration_180")],
+            [InlineKeyboardButton("📏 Без ограничений", callback_data="duration_0")],
+        ]
+        
+        await query.edit_message_text(
+            f"🎬 <b>Ограничение по длительности видео:</b>\n\n"
+            f"Выберите максимальную длительность:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        context.user_data['awaiting_duration'] = True
+        return AWAITING_MEDIA_FILTER
+    else:
+        context.user_data['temp_max_video_duration'] = None
+        return await ask_remove_text(query, context)
+
+
+async def duration_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора длительности видео."""
+    query = update.callback_query
+    await query.answer()
+    
+    choice = query.data.replace("duration_", "")
+    duration = int(choice)
+    context.user_data['temp_max_video_duration'] = duration if duration > 0 else None
+    
+    return await ask_remove_text(query, context)
+
+
+async def ask_remove_text(target, context):
+    """Спрашиваем про удаление текста."""
+    keyboard = [
+        [InlineKeyboardButton("✅ Оставлять текст", callback_data="text_keep")],
+        [InlineKeyboardButton("❌ Удалять текст", callback_data="text_remove")],
+    ]
+    
+    text = (
+        f"📝 <b>Оригинальный текст поста:</b>\n\n"
+        f"Хотите оставлять или удалять текст из источника?\n"
+        f"Если удалить — останется только медиа и подпись."
+    )
+    
+    if hasattr(target, 'edit_message_text'):
+        await target.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    else:
+        await target.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    
+    context.user_data['awaiting_text_choice'] = True
+    return AWAITING_REMOVE_TEXT
+
+
+async def remove_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранение всех настроек."""
+    query = update.callback_query
+    await query.answer()
+    
+    choice = query.data.replace("text_", "")
+    remove_text = (choice == "remove")
+    
     temp = context.user_data.get('temp_source')
+    criteria = context.user_data.get('temp_criteria', {})
+    media_filter = context.user_data.get('temp_media_filter', 'all')
+    max_video_duration = context.user_data.get('temp_max_video_duration')
+    
     if not temp:
-        await update.message.reply_text("❌ Ошибка: данные не найдены. Начните заново с /add_source")
+        await query.edit_message_text("❌ Ошибка: данные не найдены.")
         return ConversationHandler.END
     
-    await save_source_with_criteria(update, context, temp, criteria)
-    
-    context.user_data.pop('temp_criteria_views', None)
-    context.user_data.pop('awaiting_criteria', None)
-    return ConversationHandler.END
-
-
-async def save_source_with_criteria(target, context, temp: dict, criteria: dict):
     async with AsyncSessionLocal() as session:
-        # Проверяем, не добавлен ли уже такой источник в проект
         result = await session.execute(
             select(SourceChannel).where(
                 SourceChannel.project_id == temp['project_id'],
@@ -175,57 +268,53 @@ async def save_source_with_criteria(target, context, temp: dict, criteria: dict)
             )
         )
         if result.scalar_one_or_none():
-            text = f"⚠️ Канал @{temp['username']} уже добавлен в этот проект."
-            if hasattr(target, 'edit_message_text'):
-                await target.edit_message_text(text)
-            else:
-                await target.message.reply_text(text)
-            return
+            await query.edit_message_text(f"⚠️ Канал @{temp['username']} уже добавлен в этот проект.")
+            return ConversationHandler.END
         
         channel = SourceChannel(
             project_id=temp['project_id'],
             channel_username=temp['username'],
             channel_title=temp['title'],
-            criteria=criteria
+            criteria=criteria,
+            media_filter=media_filter,
+            remove_original_text=remove_text,
+            max_video_duration=max_video_duration
         )
         session.add(channel)
         await session.commit()
         logger.info(f"Added source @{temp['username']} to project {temp['project_id']}")
     
-    criteria_text = []
-    if criteria.get('min_views'):
-        criteria_text.append(f"👁 ≥{criteria['min_views']}")
-    if criteria.get('min_reactions'):
-        criteria_text.append(f"❤️ ≥{criteria['min_reactions']}")
-    criteria_str = ", ".join(criteria_text) if criteria_text else "без критериев"
+    filter_text = {"all": "все", "photo_only": "только фото", "video_only": "только видео"}.get(media_filter, "все")
     
-    text = f"✅ Канал @{temp['username']} добавлен!\n📋 Критерии: {criteria_str}"
+    text_parts = [f"✅ Канал @{temp['username']} добавлен!"]
+    text_parts.append(f"📋 Критерии: {criteria if criteria else 'без критериев'}")
+    text_parts.append(f"📷 Контент: {filter_text}")
+    if max_video_duration:
+        text_parts.append(f"🎬 Длительность видео: до {max_video_duration} сек")
+    text_parts.append(f"📝 Текст: {'удаляется' if remove_text else 'оставляется'}")
     
-    if hasattr(target, 'edit_message_text'):
-        await target.edit_message_text(text)
-    else:
-        await target.message.reply_text(text)
+    await query.edit_message_text("\n".join(text_parts))
     
     project_id = temp['project_id']
     project_name = temp['project_name']
     
-    context.user_data.pop('temp_source', None)
-    context.user_data.pop('temp_project_id', None)
-    context.user_data.pop('temp_project_name', None)
+    for key in ['temp_source', 'temp_project_id', 'temp_project_name', 'temp_criteria',
+                'temp_criteria_views', 'temp_media_filter', 'temp_max_video_duration',
+                'awaiting_criteria', 'awaiting_duration', 'awaiting_text_choice']:
+        context.user_data.pop(key, None)
     
     sources_count = await get_sources_count(project_id)
     target_channel = await get_project_target(project_id)
     if sources_count == 1 and target_channel:
-        if hasattr(target, 'message'):
-            await send_project_ready_message(target, project_name)
-        elif hasattr(target, 'edit_message_text'):
-            await target.message.reply_text(
-                f"✅ <b>Проект «{project_name}» готов к работе!</b>\n\n"
-                f"• /set_interval — настроить частоту\n"
-                f"• /set_post_interval — интервал публикации\n"
-                f"• /parse — запустить парсинг",
-                parse_mode="HTML"
-            )
+        await query.message.reply_text(
+            f"✅ <b>Проект «{project_name}» готов к работе!</b>\n\n"
+            f"• /set_interval — настроить частоту\n"
+            f"• /set_post_interval — интервал публикации\n"
+            f"• /parse — запустить парсинг",
+            parse_mode="HTML"
+        )
+    
+    return ConversationHandler.END
 
 
 async def my_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -256,6 +345,8 @@ async def my_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"📥 <b>Источники «{project.name}»</b> ({len(sources)} / {user.max_sources_per_project})\n\n"
     keyboard = []
     
+    filter_names = {"all": "все", "photo_only": "только фото", "video_only": "только видео"}
+    
     for src in sources:
         criteria_text = []
         if src.criteria:
@@ -268,6 +359,10 @@ async def my_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_icon = "✅" if src.is_active else "❌"
         text += f"{status_icon} @{src.channel_username}\n"
         text += f"   📊 {criteria_str}\n"
+        text += f"   📷 {filter_names.get(src.media_filter, 'все')}"
+        if src.max_video_duration:
+            text += f" | 🎬 до {src.max_video_duration}с"
+        text += f" | 📝 {'без текста' if src.remove_original_text else 'с текстом'}\n"
         if src.last_parsed:
             text += f"   🕐 {src.last_parsed.strftime('%d.%m.%Y %H:%M')}\n"
         text += "\n"

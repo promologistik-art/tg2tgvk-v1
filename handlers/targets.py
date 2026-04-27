@@ -20,7 +20,6 @@ async def resolve_vk_group(token: str, query: str) -> tuple:
     # Если прислали чистые цифры — это уже ID
     if query.isdigit():
         group_id = int(query)
-        # Попробуем получить название группы по ID
         try:
             params = {
                 "access_token": token,
@@ -32,7 +31,6 @@ async def resolve_vk_group(token: str, query: str) -> tuple:
                 async with session.get("https://api.vk.com/method/groups.getById", params=params) as resp:
                     data = await resp.json()
                     if "error" in data:
-                        logger.warning(f"VK API error for ID {group_id}: {data['error']}")
                         return (group_id, f"VK Group {group_id}")
                     if data.get("response"):
                         group_info = data["response"][0]
@@ -44,9 +42,10 @@ async def resolve_vk_group(token: str, query: str) -> tuple:
     # Извлекаем короткое имя из ссылки или текста
     screen_name = None
     
-    # Паттерны: vk.com/name, https://vk.com/name, @name
+    # Паттерны: vk.com/name, vk.ru/name, vkvideo.ru/@name, @name, name
     patterns = [
-        r'(?:https?://)?vk\.com/([a-zA-Z0-9_.]+)',
+        r'(?:https?://)?vk\.(?:com|ru)/([a-zA-Z0-9_.]+)',
+        r'(?:https?://)?vkvideo\.(?:com|ru)/@?([a-zA-Z0-9_.]+)',
         r'@([a-zA-Z0-9_.]+)',
         r'^([a-zA-Z0-9_.]+)$'
     ]
@@ -55,8 +54,8 @@ async def resolve_vk_group(token: str, query: str) -> tuple:
         match = re.search(pattern, query.strip())
         if match:
             screen_name = match.group(1)
-            # Убираем известные некороткие имена
-            if screen_name in ['public', 'club', 'event', 'feed', 'im', 'id', 'dev', 'api']:
+            # Убираем служебные имена VK
+            if screen_name.lower() in ['public', 'club', 'event', 'feed', 'im', 'id', 'dev', 'api', 'support', 'help']:
                 continue
             break
     
@@ -97,8 +96,8 @@ async def resolve_vk_group(token: str, query: str) -> tuple:
         logger.error(f"VK API request failed: {e}")
         return (None, "Ошибка соединения с VK API. Попробуйте позже.")
     except Exception as e:
-        logger.error(f"Unexpected error resolving VK group: {e}")
-        return (None, "Произошла ошибка. Попробуйте отправить ID цифрами.")
+        logger.error(f"Unexpected error resolving VK group: {e}", exc_info=True)
+        return (None, f"Произошла ошибка: {str(e)[:100]}")
 
 
 async def add_target_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -185,7 +184,7 @@ async def add_target_vk_token(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     context.user_data['temp_vk_token'] = token
     
-    # Проверяем валидность токена — пробуем получить информацию о токене
+    # Проверяем валидность токена
     try:
         params = {
             "access_token": token,
@@ -203,12 +202,14 @@ async def add_target_vk_token(update: Update, context: ContextTypes.DEFAULT_TYPE
                     )
                     return AWAITING_VK_TOKEN
     except:
-        pass  # Если не можем проверить — продолжаем
+        pass
     
     await update.message.reply_text(
         f"🔵 <b>Шаг 2 из 2:</b> Отправьте ссылку или ID сообщества VK.\n\n"
         f"<b>Примеры:</b>\n"
         f"• <code>https://vk.com/tastyrabbit</code>\n"
+        f"• <code>https://vk.ru/tastyrabbit</code>\n"
+        f"• <code>https://vkvideo.ru/@tastyrabbit</code>\n"
         f"• <code>public123456</code>\n"
         f"• <code>123456</code>\n\n"
         f"🤖 Бот сам определит ID сообщества.",
@@ -228,20 +229,28 @@ async def add_target_vk_group(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Пытаемся определить ID группы
     msg = await update.message.reply_text("🔍 Определяю ID сообщества...")
     
-    group_id, result = await resolve_vk_group(vk_token, query_text)
+    try:
+        group_id, result = await resolve_vk_group(vk_token, query_text)
+    except Exception as e:
+        logger.error(f"resolve_vk_group failed for '{query_text}': {e}", exc_info=True)
+        group_id = None
+        result = f"Ошибка при определении ID: {str(e)[:150]}"
     
     if group_id is None:
-        # result содержит сообщение об ошибке
         await msg.edit_text(
             f"❌ {result}\n\n"
             f"Попробуйте:\n"
-            f"• Открыть сообщество в браузере и скопировать цифры из адресной строки\n"
-            f"• Или отправьте ссылку вида <code>https://vk.com/public123456</code>\n"
-            f"• Или просто ID цифрами: <code>123456</code>"
+            f"• Открыть сообщество VK в браузере\n"
+            f"• Скопировать ссылку из адресной строки\n"
+            f"• Или отправьте ID цифрами: <code>123456</code>\n\n"
+            f"<b>Принимаются ссылки:</b>\n"
+            f"• <code>vk.com/имя</code>\n"
+            f"• <code>vk.ru/имя</code>\n"
+            f"• <code>vkvideo.ru/@имя</code>"
         )
         return AWAITING_VK_GROUP
     
-    group_name = result  # result — имя группы
+    group_name = result
     
     async with AsyncSessionLocal() as session:
         channel = TargetChannel(

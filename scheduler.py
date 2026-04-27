@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from database import AsyncSessionLocal, is_post_parsed, mark_post_parsed, clear_parsed_cache
 from models import User, Project, SourceChannel, TargetChannel, PostQueue
-from scraper import TelegramScraper
-from poster import PosterService
+from scrapers import TelegramScraper
+from posters import TelegramPoster
 from utils import calculate_score, get_moscow_time
 from config import Config
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class Scheduler:
-    def __init__(self, poster: PosterService):
+    def __init__(self, poster: TelegramPoster):
         self.poster = poster
         self._running = False
         self._tasks = {}
@@ -36,13 +36,11 @@ class Scheduler:
 
     async def _check_daily_tasks(self):
         now = get_moscow_time()
-        
         if now.hour == 9 and now.minute == 0:
             today = now.date()
             if self._last_daily_report != today:
                 self._last_daily_report = today
                 await self._send_daily_report()
-                await self._send_trial_warnings()
 
     async def _send_daily_report(self):
         try:
@@ -51,53 +49,13 @@ class Scheduler:
                 users = result.scalars().all()
             
             now = datetime.utcnow()
-            total_users = len(users)
-            new_today = sum(1 for u in users if u.created_at and (now - u.created_at).days < 1)
-            on_trial = sum(1 for u in users if not u.subscription_active and u.trial_ends_at and u.trial_ends_at > now)
-            paid = sum(1 for u in users if u.subscription_active)
-            
-            report_text = (
-                f"📊 <b>Ежедневный отчёт</b>\n"
-                f"📅 {now.strftime('%d.%m.%Y')}\n\n"
-                f"👥 Всего: {total_users}\n"
-                f"🆕 Новых: {new_today}\n"
-                f"🎁 На триале: {on_trial}\n"
-                f"💎 Платных: {paid}"
-            )
+            report_text = f"📊 <b>Ежедневный отчёт</b>\n📅 {now.strftime('%d.%m.%Y')}\n\n👥 Всего: {len(users)}"
             
             from telegram import Bot
             bot = Bot(token=Config.BOT_TOKEN)
             await bot.send_message(chat_id=Config.ADMIN_ID, text=report_text, parse_mode="HTML")
-            logger.info("Daily report sent")
         except Exception as e:
             logger.error(f"Failed to send daily report: {e}")
-
-    async def _send_trial_warnings(self):
-        now = datetime.utcnow()
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(select(User))
-            users = result.scalars().all()
-            
-            from telegram import Bot
-            bot = Bot(token=Config.BOT_TOKEN)
-            
-            for user in users:
-                if user.is_admin:
-                    continue
-                
-                if not user.subscription_active and user.trial_ends_at:
-                    days_left = (user.trial_ends_at - now).days
-                    if days_left == 1:
-                        try:
-                            await bot.send_message(
-                                chat_id=user.telegram_id,
-                                text=f"⚠️ Пробный период заканчивается завтра!\n📅 До: {user.trial_ends_at.strftime('%d.%m.%Y')}",
-                                parse_mode="HTML"
-                            )
-                        except:
-                            pass
-            
-            await session.commit()
 
     async def _check_projects(self):
         now = datetime.utcnow()
@@ -167,7 +125,7 @@ class Scheduler:
             logger.warning(f"⚠️ Project '{project.name}' has no sources or target")
             return
         
-        logger.info(f"📊 Project '{project.name}': {len(sources)} sources → {target.channel_title}")
+        logger.info(f"📊 Project '{project.name}': {len(sources)} sources → {target.channel_title or target.vk_group_name} ({target.platform})")
         
         posts_to_publish = []
         total_parsed = 0
@@ -191,8 +149,21 @@ class Scheduler:
                     if await is_post_parsed(project.id, post["url"]):
                         continue
                     
+                    # Фильтр по типу медиа
+                    if source.media_filter == "photo_only" and not post.get("has_media"):
+                        continue
+                    if source.media_filter == "photo_only" and post.get("media_type") == "video":
+                        continue
+                    if source.media_filter == "video_only" and not post.get("has_media"):
+                        continue
+                    if source.media_filter == "video_only" and post.get("media_type") == "photo":
+                        continue
+                    
                     post["source_username"] = source.channel_username
                     post["source_title"] = source.channel_title
+                    post["media_filter"] = source.media_filter
+                    post["remove_original_text"] = source.remove_original_text
+                    post["max_video_duration"] = source.max_video_duration
                     
                     post_time = datetime.utcnow()
                     if post.get("datetime"):
@@ -217,7 +188,7 @@ class Scheduler:
                         logger.warning(f"⚠️ Skipping empty post from @{source.channel_username}")
                         continue
                     
-                    logger.info(f"🏆 Selected from @{source.channel_username}: score={best_score}, views={best_post.get('views')}")
+                    logger.info(f"🏆 Selected from @{source.channel_username}: score={best_score}")
                     
                     await mark_post_parsed(project.id, source.id, best_post["url"])
                     total_parsed += 1
@@ -249,10 +220,8 @@ class Scheduler:
         if posts_to_publish:
             logger.info(f"📤 Found {len(posts_to_publish)} posts for project '{project.name}'")
             
-            # Время в MSK (offset-naive)
             current_time = get_moscow_time().replace(tzinfo=None)
             
-            # Получаем последнее время из очереди
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
                     select(PostQueue)
@@ -264,22 +233,19 @@ class Scheduler:
             
             if last_queued:
                 last_time_msk = last_queued.scheduled_time + timedelta(hours=3)
-                if last_time_msk > current_time:
-                    next_time = last_time_msk
-                else:
-                    next_time = current_time
+                next_time = last_time_msk if last_time_msk > current_time else current_time
             else:
                 next_time = current_time
             
-            # Проверяем активные часы
-            if next_time.hour < project.active_hours_start:
-                next_time = next_time.replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
-            elif next_time.hour >= project.active_hours_end:
-                next_time = (next_time + timedelta(days=1)).replace(
-                    hour=project.active_hours_start, minute=0, second=0, microsecond=0
-                )
+            # Активные часы
+            if project.active_hours_start == 0 and project.active_hours_end == 24:
+                pass  # Круглосуточно
+            else:
+                if next_time.hour < project.active_hours_start:
+                    next_time = next_time.replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
+                elif next_time.hour >= project.active_hours_end:
+                    next_time = (next_time + timedelta(days=1)).replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
             
-            # Интервал между постами
             interval_minutes = max(int(project.post_interval_hours * 60), user.min_post_interval_minutes)
             interval_minutes = max(interval_minutes, Config.MIN_POST_INTERVAL_MINUTES)
             
@@ -288,53 +254,34 @@ class Scheduler:
             for i, post in enumerate(posts_to_publish):
                 if i > 0:
                     next_time = next_time + timedelta(minutes=interval_minutes)
-                    
-                    if next_time.hour >= project.active_hours_end:
-                        next_time = (next_time + timedelta(days=1)).replace(
-                            hour=project.active_hours_start, minute=0, second=0, microsecond=0
-                        )
+                    if project.active_hours_end != 24 and next_time.hour >= project.active_hours_end:
+                        next_time = (next_time + timedelta(days=1)).replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
                 
                 utc_time = next_time - timedelta(hours=3)
                 
                 await self.poster.add_to_queue(
                     project_id=project.id,
-                    target_channel_id=target.channel_id,
+                    target_channel_id=target.id,
                     post_data=post,
                     scheduled_time=utc_time
                 )
                 total_posted += 1
-                
-                logger.info(f"📅 Post {i+1} from @{post.get('source_username')} scheduled for {next_time.strftime('%d.%m.%Y %H:%M')} MSK")
+                logger.info(f"📅 Post {i+1} scheduled for {next_time.strftime('%d.%m.%Y %H:%M')} MSK")
             
-            # Обновляем статистику
             async with AsyncSessionLocal() as session:
                 result = await session.execute(select(Project).where(Project.id == project.id))
                 db_project = result.scalar_one()
-                
                 today = datetime.utcnow().date()
                 if db_project.last_reset.date() < today:
                     db_project.posts_parsed_today = 0
                     db_project.posts_posted_today = 0
                     db_project.last_reset = datetime.utcnow()
-                
                 db_project.posts_parsed_today += total_parsed
-                
-                result = await session.execute(select(User).where(User.telegram_id == project.user_id))
-                db_user = result.scalar_one_or_none()
-                if db_user:
-                    if db_user.last_reset.date() < today:
-                        db_user.posts_parsed_today = 0
-                        db_user.posts_posted_today = 0
-                        db_user.last_reset = datetime.utcnow()
-                    db_user.posts_parsed_today += total_parsed
-                
                 await session.commit()
-                logger.info(f"📊 Stats updated: +{total_parsed} parsed, +{total_posted} queued")
         
         logger.info(f"✅ Project '{project.name}' processing completed")
 
     async def stop(self):
-        logger.info("🛑 Stopping scheduler...")
         self._running = False
         for task_key, task in self._tasks.items():
             if not task.done():

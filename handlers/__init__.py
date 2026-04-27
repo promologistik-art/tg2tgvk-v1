@@ -1,4 +1,12 @@
-from .constants import *
+from .constants import (
+    AWAITING_SOURCE_USERNAME, AWAITING_TARGET_FORWARD, AWAITING_CRITERIA,
+    AWAITING_INTERVAL, AWAITING_VIEWS, AWAITING_REACTIONS, AWAITING_SIGNATURE,
+    AWAITING_POST_INTERVAL, AWAITING_POST_START_TIME,
+    AWAITING_MEDIA_FILTER, AWAITING_REMOVE_TEXT,
+    AWAITING_TARGET_PLATFORM, AWAITING_VK_TOKEN, AWAITING_VK_GROUP,
+    AWAITING_TARIFF_SELECT, AWAITING_BROADCAST_MESSAGE
+)
+
 from .common import start, help_command, cancel
 from .projects import (
     my_projects, projects_callback, handle_project_name,
@@ -28,7 +36,5 @@ from .admin import (
     admin_set_tariff_start, admin_extend_trial_start,
     broadcast_start, broadcast_send
 )
-from .test import test_scraper
-from .utils import setup_bot_commands
-
 from .test import test_scraper, debug_reactions
+from .utils import setup_bot_commands

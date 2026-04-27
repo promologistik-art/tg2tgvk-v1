@@ -152,15 +152,40 @@ class TelegramScraper:
         }
 
     def _parse_reactions(self, msg_div) -> int:
+        """Парсинг реакций — универсальный метод."""
         total = 0
+        
+        # Метод 1: Ищем блок реакций
         reactions_div = msg_div.find("div", class_="tgme_widget_message_reactions")
         if reactions_div:
+            # Ищем span с классом "reactions_count"
             for span in reactions_div.find_all("span"):
-                if span.get("class") and "count" in " ".join(span.get("class", [])):
-                    total += parse_number(span.get_text(strip=True))
+                classes = span.get("class", [])
+                if any("count" in c.lower() for c in classes):
+                    count_text = span.get_text(strip=True)
+                    if count_text:
+                        total += parse_number(count_text)
+            
+            # Ищем data-атрибуты с количеством реакций
             if total == 0:
-                for elem in reactions_div.find_all(attrs={"data-count": True}):
-                    total += parse_number(elem.get("data-count", "0"))
+                for tag in reactions_div.find_all(attrs={"data-count": True}):
+                    total += parse_number(tag.get("data-count", "0"))
+            
+            # Ищем эмодзи с числом внутри блока реакций
+            if total == 0:
+                reactions_html = str(reactions_div)
+                # Ищем паттерн: эмодзи (1-3 символа) + пробел + число
+                emoji_count_pattern = r'([^\w\s\d]{1,3})\s*(\d{1,6}(?:[.,]\d+)?[KkMm]?)'
+                matches = re.findall(emoji_count_pattern, reactions_html)
+                for emoji, count in matches:
+                    # Исключаем эмодзи, которые используются как кнопки/ссылки
+                    if emoji in ['▶', '►', '➡', '⬅', '⬆', '⬇', '🔗', '📎', '�']:
+                        continue
+                    num = parse_number(count)
+                    if num > 0:
+                        total += num
+        
+        # Метод 2: Ищем в JSON-скриптах внутри сообщения
         if total == 0:
             scripts = msg_div.find_all("script", type="application/json")
             for script in scripts:
@@ -169,6 +194,29 @@ class TelegramScraper:
                     total += self._extract_reactions_from_json(data)
                 except:
                     pass
+        
+        # Метод 3: Ищем в HTML-коде всего сообщения
+        if total == 0:
+            msg_html = str(msg_div)
+            # Ищем эмодзи + число
+            emoji_count_pattern = r'([^\w\s\d]{1,3})\s*(\d{1,6}(?:[.,]\d+)?[KkMm]?)'
+            matches = re.findall(emoji_count_pattern, msg_html)
+            # Собираем все найденные числа
+            numbers_found = []
+            for emoji, count in matches:
+                if emoji in ['▶', '►', '➡', '⬅', '⬆', '⬇', '🔗', '📎', '•', '·', '○', '●', '□', '■', '△', '▲', '☆', '★', '�']:
+                    continue
+                num = parse_number(count)
+                if num > 0:
+                    numbers_found.append(num)
+            
+            # Берём уникальные числа, которые вероятно являются реакциями
+            # (исключаем просмотры — они обычно с буквой K/M)
+            reaction_numbers = [n for n in numbers_found if n < 1000000]
+            if reaction_numbers:
+                # Суммируем все найденные числа реакций
+                total = sum(reaction_numbers)
+        
         return total
 
     def _extract_reactions_from_json(self, data, depth=0) -> int:
@@ -176,7 +224,7 @@ class TelegramScraper:
             return 0
         total = 0
         if isinstance(data, dict):
-            for key in ['reactions', 'reaction_count', 'count', 'total_reactions']:
+            for key in ['reactions', 'reaction_count', 'count', 'total_reactions', 'reactionsCount', 'reactions_count']:
                 if key in data:
                     try:
                         if isinstance(data[key], (int, float)):

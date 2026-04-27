@@ -29,7 +29,7 @@ from handlers import (
     admin_panel, admin_callback, admin_back_callback,
     admin_set_tariff_start, admin_extend_trial_start,
     broadcast_start, broadcast_send,
-    test_scraper,
+    test_scraper, debug_reactions,
     setup_bot_commands,
     AWAITING_SOURCE_USERNAME, AWAITING_TARGET_FORWARD, AWAITING_CRITERIA,
     AWAITING_INTERVAL, AWAITING_VIEWS, AWAITING_REACTIONS, AWAITING_SIGNATURE,
@@ -140,6 +140,7 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("test", test_scraper))
+    app.add_handler(CommandHandler("debug_reactions", debug_reactions))
     app.add_handler(CommandHandler("my_projects", my_projects))
     app.add_handler(CommandHandler("my_sources", my_sources))
     app.add_handler(CommandHandler("my_targets", my_targets))
@@ -154,7 +155,6 @@ async def main():
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("admin_set_tariff", admin_set_tariff_start))
     app.add_handler(CommandHandler("admin_extend_trial", admin_extend_trial_start))
-    app.add_handler(CommandHandler("debug_reactions", debug_reactions))
     
     # ============ Conversation Handlers (register) ============
     

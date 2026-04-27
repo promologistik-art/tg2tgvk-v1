@@ -154,6 +154,7 @@ async def main():
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("admin_set_tariff", admin_set_tariff_start))
     app.add_handler(CommandHandler("admin_extend_trial", admin_extend_trial_start))
+    app.add_handler(CommandHandler("debug_reactions", debug_reactions))
     
     # ============ Conversation Handlers (register) ============
     

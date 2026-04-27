@@ -1,4 +1,6 @@
 import logging
+import re
+import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from sqlalchemy import delete
@@ -8,6 +10,95 @@ from .utils import require_project, get_sources_count, get_project_target, send_
 from .constants import AWAITING_TARGET_PLATFORM, AWAITING_TARGET_FORWARD, AWAITING_VK_TOKEN, AWAITING_VK_GROUP
 
 logger = logging.getLogger(__name__)
+
+
+async def resolve_vk_group(token: str, query: str) -> tuple:
+    """
+    Определяет ID группы VK по ссылке или короткому имени.
+    Возвращает (group_id, group_name) или (None, error_message).
+    """
+    # Если прислали чистые цифры — это уже ID
+    if query.isdigit():
+        group_id = int(query)
+        # Попробуем получить название группы по ID
+        try:
+            params = {
+                "access_token": token,
+                "v": "5.199",
+                "group_ids": str(group_id),
+                "fields": "name"
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://api.vk.com/method/groups.getById", params=params) as resp:
+                    data = await resp.json()
+                    if "error" in data:
+                        logger.warning(f"VK API error for ID {group_id}: {data['error']}")
+                        return (group_id, f"VK Group {group_id}")
+                    if data.get("response"):
+                        group_info = data["response"][0]
+                        return (group_id, group_info.get("name", f"VK Group {group_id}"))
+        except Exception as e:
+            logger.error(f"Failed to get group name: {e}")
+        return (group_id, f"VK Group {group_id}")
+    
+    # Извлекаем короткое имя из ссылки или текста
+    screen_name = None
+    
+    # Паттерны: vk.com/name, https://vk.com/name, @name
+    patterns = [
+        r'(?:https?://)?vk\.com/([a-zA-Z0-9_.]+)',
+        r'@([a-zA-Z0-9_.]+)',
+        r'^([a-zA-Z0-9_.]+)$'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, query.strip())
+        if match:
+            screen_name = match.group(1)
+            # Убираем известные некороткие имена
+            if screen_name in ['public', 'club', 'event', 'feed', 'im', 'id', 'dev', 'api']:
+                continue
+            break
+    
+    if not screen_name:
+        return (None, "Не удалось распознать ссылку или ID сообщества.")
+    
+    # Ищем группу по короткому имени через API
+    try:
+        params = {
+            "access_token": token,
+            "v": "5.199",
+            "group_id": screen_name,
+            "fields": "name"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.vk.com/method/groups.getById", params=params) as resp:
+                data = await resp.json()
+                
+                if "error" in data:
+                    error_code = data["error"].get("error_code", 0)
+                    if error_code == 100:
+                        return (None, f"Сообщество «{screen_name}» не найдено. Проверьте правильность ссылки.")
+                    elif error_code == 15:
+                        return (None, f"Сообщество «{screen_name}» недоступно (закрыто или забанено).")
+                    else:
+                        error_msg = data["error"].get("error_msg", "неизвестная ошибка")
+                        return (None, f"Ошибка VK API: {error_msg}")
+                
+                if data.get("response"):
+                    group_info = data["response"][0]
+                    group_id = group_info.get("id", 0)
+                    group_name = group_info.get("name", screen_name)
+                    return (group_id, group_name)
+                
+                return (None, f"Сообщество «{screen_name}» не найдено.")
+                
+    except aiohttp.ClientError as e:
+        logger.error(f"VK API request failed: {e}")
+        return (None, "Ошибка соединения с VK API. Попробуйте позже.")
+    except Exception as e:
+        logger.error(f"Unexpected error resolving VK group: {e}")
+        return (None, "Произошла ошибка. Попробуйте отправить ID цифрами.")
 
 
 async def add_target_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,7 +176,6 @@ async def add_target_vk_token(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Получение ключа доступа VK."""
     token = update.message.text.strip()
     
-    # Валидация: ключ VK обычно длинный, содержит буквы и цифры
     if len(token) < 20:
         await update.message.reply_text(
             "❌ Ключ слишком короткий.\n"
@@ -93,45 +183,65 @@ async def add_target_vk_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return AWAITING_VK_TOKEN
     
-    # Сохраняем токен
     context.user_data['temp_vk_token'] = token
     
+    # Проверяем валидность токена — пробуем получить информацию о токене
+    try:
+        params = {
+            "access_token": token,
+            "v": "5.199"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.vk.com/method/users.get", params=params) as resp:
+                data = await resp.json()
+                if "error" in data:
+                    error_msg = data["error"].get("error_msg", "неизвестная ошибка")
+                    await update.message.reply_text(
+                        f"⚠️ Ключ не прошёл проверку: {error_msg}\n"
+                        f"Проверьте правильность ключа или отправьте другой.\n"
+                        f"Если уверены, что ключ правильный — отправьте его ещё раз."
+                    )
+                    return AWAITING_VK_TOKEN
+    except:
+        pass  # Если не можем проверить — продолжаем
+    
     await update.message.reply_text(
-        f"🔵 <b>Шаг 2 из 2:</b> Отправьте ID сообщества VK.\n\n"
-        f"<b>Где найти ID:</b>\n"
-        f"• Откройте сообщество VK\n"
-        f"• В адресной строке будет:\n"
-        f"  <code>vk.com/public123456</code> → ID = <b>123456</b>\n"
-        f"  <code>vk.com/club123456</code> → ID = <b>123456</b>\n"
-        f"  <code>vk.com/короткое_имя</code> → откройте:\n"
-        f"  <code>vk.com/foaf.php?acting=короткое_имя</code>\n\n"
-        f"Отправьте только цифры ID.",
+        f"🔵 <b>Шаг 2 из 2:</b> Отправьте ссылку или ID сообщества VK.\n\n"
+        f"<b>Примеры:</b>\n"
+        f"• <code>https://vk.com/tastyrabbit</code>\n"
+        f"• <code>public123456</code>\n"
+        f"• <code>123456</code>\n\n"
+        f"🤖 Бот сам определит ID сообщества.",
         parse_mode="HTML"
     )
     return AWAITING_VK_GROUP
 
 
 async def add_target_vk_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохранение VK-цели."""
-    group_id_str = update.message.text.strip()
-    
-    # Извлекаем только цифры из ввода
-    import re
-    digits = re.sub(r'\D', '', group_id_str)
-    
-    if not digits:
-        await update.message.reply_text(
-            "❌ Не удалось найти ID.\n"
-            "Отправьте ID сообщества (только цифры).\n"
-            "Например: 123456"
-        )
-        return AWAITING_VK_GROUP
-    
-    group_id = int(digits)
+    """Сохранение VK-цели с автоопределением ID."""
+    query_text = update.message.text.strip()
     
     project_id = context.user_data.get('temp_project_id')
     project_name = context.user_data.get('temp_project_name')
     vk_token = context.user_data.get('temp_vk_token')
+    
+    # Пытаемся определить ID группы
+    msg = await update.message.reply_text("🔍 Определяю ID сообщества...")
+    
+    group_id, result = await resolve_vk_group(vk_token, query_text)
+    
+    if group_id is None:
+        # result содержит сообщение об ошибке
+        await msg.edit_text(
+            f"❌ {result}\n\n"
+            f"Попробуйте:\n"
+            f"• Открыть сообщество в браузере и скопировать цифры из адресной строки\n"
+            f"• Или отправьте ссылку вида <code>https://vk.com/public123456</code>\n"
+            f"• Или просто ID цифрами: <code>123456</code>"
+        )
+        return AWAITING_VK_GROUP
+    
+    group_name = result  # result — имя группы
     
     async with AsyncSessionLocal() as session:
         channel = TargetChannel(
@@ -139,15 +249,16 @@ async def add_target_vk_group(update: Update, context: ContextTypes.DEFAULT_TYPE
             platform="vk",
             vk_token=vk_token,
             vk_group_id=group_id,
-            vk_group_name=f"VK Group {group_id}"
+            vk_group_name=group_name
         )
         session.add(channel)
         await session.commit()
-        logger.info(f"Added VK target: group {group_id} to project {project_id}")
+        logger.info(f"Added VK target: {group_name} (ID: {group_id}) to project {project_id}")
     
-    await update.message.reply_text(
+    await msg.edit_text(
         f"✅ <b>VK-сообщество добавлено!</b>\n\n"
-        f"🆔 ID сообщества: <code>{group_id}</code>\n"
+        f"📝 Название: <b>{group_name}</b>\n"
+        f"🆔 ID: <code>{group_id}</code>\n"
         f"🔐 Ключ доступа сохранён\n\n"
         f"💡 Теперь добавьте источники через /add_source\n"
         f"Бот будет парсить каналы и публиковать посты в это сообщество VK."
@@ -180,7 +291,6 @@ async def add_target_forward(update: Update, context: ContextTypes.DEFAULT_TYPE)
     project_id = context.user_data.get('temp_project_id')
     project_name = context.user_data.get('temp_project_name')
     
-    # Проверяем права бота в канале
     try:
         test_msg = await context.bot.send_message(chat.id, "🔧 Проверка прав доступа...")
         await test_msg.delete()
@@ -210,14 +320,12 @@ async def add_target_forward(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"✅ <b>Telegram-канал добавлен!</b>\n\n"
         f"📝 Название: {chat.title}\n"
         f"🆔 ID: <code>{chat.id}</code>\n"
-        f"{'🔗 @' + chat.username if chat.username else ''}"
+        f"{'🔗 @' + chat.username if chat.username else ''}"  
     )
     
-    # Очищаем временные данные
     for key in ['temp_project_id', 'temp_project_name', 'temp_platform']:
         context.user_data.pop(key, None)
     
-    # Проверяем, готов ли проект
     sources_count = await get_sources_count(project_id)
     if sources_count > 0:
         await send_project_ready_message(update, project_name)

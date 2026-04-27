@@ -30,3 +30,5 @@ from .admin import (
 )
 from .test import test_scraper
 from .utils import setup_bot_commands
+
+from .test import test_scraper, debug_reactions

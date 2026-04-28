@@ -1,4 +1,5 @@
 import logging
+import re
 from telegram import Update
 from telegram.ext import ContextTypes
 from bs4 import BeautifulSoup
@@ -9,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 async def test_scraper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тест скрапера."""
     if not context.args:
         await update.message.reply_text("ℹ️ /test [username]\nПример: /test durov")
         return
@@ -22,13 +22,13 @@ async def test_scraper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with TelegramScraper() as scraper:
         info = await scraper.get_channel_info(username)
         if not info:
-            await msg.edit_text(f"❌ Канал @{username} не найден или не публичный")
+            await msg.edit_text(f"❌ Канал @{username} не найден")
             return
         
         posts = await scraper.get_posts(username, limit=5)
         
         if posts:
-            text = f"📨 @{username} ({info['title']})\nНайдено постов: {len(posts)}\n\n"
+            text = f"📨 @{username}\nНайдено: {len(posts)}\n\n"
             for i, p in enumerate(posts[:5], 1):
                 text += f"{i}. 👁 {format_number(p['views'])} | ❤️ {format_number(p['reactions'])}\n"
                 text += f"   📎 {'📷' if p.get('media_type') == 'photo' else '🎬' if p.get('media_type') == 'video' else '📝'}\n"
@@ -36,15 +36,14 @@ async def test_scraper(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text += f"   {p['text'][:50]}...\n"
                 text += "\n"
         else:
-            text = f"❌ Посты не найдены. Проверьте https://t.me/s/{username}"
+            text = f"❌ Посты не найдены"
     
     await msg.edit_text(text)
 
 
 async def debug_reactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отладка парсинга реакций — показывает сырой HTML."""
     if not context.args:
-        await update.message.reply_text("ℹ️ /debug_reactions [username]\nПример: /debug_reactions yaplakal")
+        await update.message.reply_text("ℹ️ /debug_reactions [username]")
         return
     
     username = context.args[0].replace("@", "").strip("/")
@@ -65,39 +64,44 @@ async def debug_reactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Сообщения не найдены")
             return
         
-        result = []
+        # Отправляем результат в файле, чтобы избежать проблем с HTML
+        result_lines = []
         for i, msg_div in enumerate(messages, 1):
             reactions_div = msg_div.find("div", class_="tgme_widget_message_reactions")
             
-            result.append(f"📝 <b>Пост {i}:</b>")
+            result_lines.append(f"=== Пост {i} ===")
             
             if reactions_div:
-                reactions_html = str(reactions_div)[:400]
-                result.append(f"✅ Блок реакций найден:")
-                result.append(f"<code>{reactions_html}</code>")
+                reactions_html = str(reactions_div)
+                result_lines.append(f"Блок реакций: {reactions_html[:500]}")
                 
                 spans = reactions_div.find_all("span")
-                for span in spans:
+                for span in spans[:10]:
                     classes = span.get("class", [])
                     text = span.get_text(strip=True)
-                    result.append(f"• Span: classes={classes}, text='{text}'")
+                    result_lines.append(f"  Span: classes={classes}, text='{text}'")
                 
-                # Ищем эмодзи с числами
-                import re
                 reactions_text = reactions_div.get_text()
                 emoji_pattern = r'([^\w\s\d]{1,3})\s*(\d{1,6})'
                 matches = re.findall(emoji_pattern, reactions_text)
                 if matches:
-                    result.append(f"🔍 Найдены эмодзи+числа: {matches}")
+                    result_lines.append(f"  Эмодзи+числа: {matches}")
             else:
-                result.append(f"❌ Блок реакций НЕ найден")
-                msg_html = str(msg_div)[:300]
-                result.append(f"HTML: <code>{msg_html}</code>")
+                result_lines.append(f"Блок реакций НЕ НАЙДЕН")
+                result_lines.append(f"HTML сообщения: {str(msg_div)[:300]}")
             
-            result.append("")
+            result_lines.append("")
         
-        full_result = "\n".join(result)
-        if len(full_result) > 4000:
-            full_result = full_result[:4000] + "..."
+        full_result = "\n".join(result_lines)
         
-        await msg.edit_text(full_result, parse_mode="HTML")
+        # Отправляем как файл
+        from io import BytesIO
+        result_file = BytesIO(full_result.encode('utf-8'))
+        result_file.name = f"reactions_{username}.txt"
+        
+        await msg.delete()
+        await update.message.reply_document(
+            document=result_file,
+            filename=f"reactions_{username}.txt",
+            caption=f"🔍 Результат анализа @{username}"
+        )

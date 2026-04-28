@@ -2,9 +2,9 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from sqlalchemy import select, update
-from database import AsyncSessionLocal, is_post_parsed, mark_post_parsed, clear_parsed_cache
+from database import AsyncSessionLocal, is_post_parsed, mark_post_parsed
 from models import User, Project, SourceChannel, TargetChannel, PostQueue
 from scrapers import TelegramScraper
 from posters import TelegramPoster
@@ -20,6 +20,7 @@ class Scheduler:
         self._running = False
         self._tasks = {}
         self._last_daily_report = None
+        self._last_check = {}
 
     async def start(self):
         self._running = True
@@ -47,19 +48,15 @@ class Scheduler:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(select(User).order_by(User.created_at.desc()))
                 users = result.scalars().all()
-            
             now = datetime.utcnow()
-            report_text = f"📊 <b>Ежедневный отчёт</b>\n📅 {now.strftime('%d.%m.%Y')}\n\n👥 Всего: {len(users)}"
-            
             from telegram import Bot
             bot = Bot(token=Config.BOT_TOKEN)
-            await bot.send_message(chat_id=Config.ADMIN_ID, text=report_text, parse_mode="HTML")
+            await bot.send_message(chat_id=Config.ADMIN_ID, text=f"📊 Отчёт\n📅 {now.strftime('%d.%m.%Y')}\n👥 Всего: {len(users)}")
         except Exception as e:
-            logger.error(f"Failed to send daily report: {e}")
+            logger.error(f"Daily report failed: {e}")
 
     async def _check_projects(self):
         now = datetime.utcnow()
-        current_minute = now.minute
         
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(Project).where(Project.is_active == True))
@@ -81,15 +78,24 @@ class Scheduler:
                     if not has_access:
                         continue
                 
-                interval = min(project.check_interval_minutes, user.min_check_interval_minutes) if not user.is_admin else project.check_interval_minutes
-                slot = max(interval // 60, 1)
+                interval = project.check_interval_minutes
+                if not user.is_admin:
+                    interval = max(interval, user.min_check_interval_minutes)
                 
-                if current_minute % slot == 0:
-                    task_key = f"project_{project.id}"
-                    if task_key not in self._tasks or self._tasks[task_key].done():
-                        task = asyncio.create_task(self._process_project(project))
-                        self._tasks[task_key] = task
-                        logger.info(f"⏰ Project '{project.name}' scheduled")
+                # Проверяем, прошло ли достаточно времени
+                last_check = self._last_check.get(project.id)
+                if last_check:
+                    elapsed = (now - last_check).total_seconds() / 60
+                    if elapsed < interval:
+                        continue
+                
+                self._last_check[project.id] = now
+                
+                task_key = f"project_{project.id}"
+                if task_key not in self._tasks or self._tasks[task_key].done():
+                    task = asyncio.create_task(self._process_project(project))
+                    self._tasks[task_key] = task
+                    logger.info(f"⏰ Project '{project.name}' (ID: {project.id}) scheduled")
 
     async def _process_project(self, project: Project):
         logger.info(f"🔍 Processing project '{project.name}' (ID: {project.id})")
@@ -125,7 +131,7 @@ class Scheduler:
             logger.warning(f"⚠️ Project '{project.name}' has no sources or target")
             return
         
-        logger.info(f"📊 Project '{project.name}': {len(sources)} sources → {target.channel_title or target.vk_group_name} ({target.platform})")
+        logger.info(f"📊 Project '{project.name}': {len(sources)} sources → {target.channel_title or target.vk_group_name}")
         
         posts_to_publish = []
         total_parsed = 0
@@ -135,7 +141,7 @@ class Scheduler:
                 logger.info(f"📡 Fetching @{source.channel_username}")
                 
                 try:
-                    posts = await scraper.get_posts(source.channel_username, limit=50)
+                    posts = await scraper.get_posts(source.channel_username, limit=100)
                     logger.info(f"📨 @{source.channel_username}: {len(posts)} posts fetched")
                 except Exception as e:
                     logger.error(f"❌ Failed to fetch @{source.channel_username}: {e}")
@@ -149,7 +155,6 @@ class Scheduler:
                     if await is_post_parsed(project.id, post["url"]):
                         continue
                     
-                    # Фильтр по типу медиа
                     if source.media_filter == "photo_only" and not post.get("has_media"):
                         continue
                     if source.media_filter == "photo_only" and post.get("media_type") == "video":
@@ -163,7 +168,6 @@ class Scheduler:
                     post["source_title"] = source.channel_title
                     post["media_filter"] = source.media_filter
                     post["remove_original_text"] = source.remove_original_text
-                    post["max_video_duration"] = source.max_video_duration
                     
                     post_time = datetime.utcnow()
                     if post.get("datetime"):
@@ -185,7 +189,6 @@ class Scheduler:
                 if best_post:
                     has_content = best_post.get("text") or (best_post.get("has_media") and best_post.get("media_url"))
                     if not has_content:
-                        logger.warning(f"⚠️ Skipping empty post from @{source.channel_username}")
                         continue
                     
                     logger.info(f"🏆 Selected from @{source.channel_username}: score={best_score}")
@@ -200,10 +203,6 @@ class Scheduler:
                         
                         if await scraper.download_media(best_post["media_url"], media_path):
                             best_post["media_path"] = media_path
-                            logger.info(f"📎 Media downloaded")
-                        else:
-                            best_post["has_media"] = False
-                            best_post["media_path"] = None
                     
                     posts_to_publish.append(best_post)
                     
@@ -214,20 +213,15 @@ class Scheduler:
                             .values(last_parsed=datetime.utcnow(), last_post_url=best_post["url"])
                         )
                         await session.commit()
-                else:
-                    logger.info(f"😴 @{source.channel_username}: no suitable posts")
         
         if posts_to_publish:
-            logger.info(f"📤 Found {len(posts_to_publish)} posts for project '{project.name}'")
+            logger.info(f"📤 Found {len(posts_to_publish)} posts")
             
             current_time = get_moscow_time().replace(tzinfo=None)
             
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(PostQueue)
-                    .where(PostQueue.project_id == project.id)
-                    .order_by(PostQueue.scheduled_time.desc())
-                    .limit(1)
+                    select(PostQueue).where(PostQueue.project_id == project.id).order_by(PostQueue.scheduled_time.desc()).limit(1)
                 )
                 last_queued = result.scalar_one_or_none()
             
@@ -237,19 +231,13 @@ class Scheduler:
             else:
                 next_time = current_time
             
-            # Активные часы
-            if project.active_hours_start == 0 and project.active_hours_end == 24:
-                pass  # Круглосуточно
-            else:
+            if not (project.active_hours_start == 0 and project.active_hours_end == 24):
                 if next_time.hour < project.active_hours_start:
                     next_time = next_time.replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
                 elif next_time.hour >= project.active_hours_end:
                     next_time = (next_time + timedelta(days=1)).replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
             
-            interval_minutes = max(int(project.post_interval_hours * 60), user.min_post_interval_minutes)
-            interval_minutes = max(interval_minutes, Config.MIN_POST_INTERVAL_MINUTES)
-            
-            total_posted = 0
+            interval_minutes = max(int(project.post_interval_hours * 60), user.min_post_interval_minutes, Config.MIN_POST_INTERVAL_MINUTES)
             
             for i, post in enumerate(posts_to_publish):
                 if i > 0:
@@ -265,7 +253,6 @@ class Scheduler:
                     post_data=post,
                     scheduled_time=utc_time
                 )
-                total_posted += 1
                 logger.info(f"📅 Post {i+1} scheduled for {next_time.strftime('%d.%m.%Y %H:%M')} MSK")
             
             async with AsyncSessionLocal() as session:

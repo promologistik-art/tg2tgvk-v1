@@ -32,26 +32,45 @@ class TelegramPoster:
             logger.info(f"📨 Post queued for project {project_id}, scheduled at {scheduled_time}")
 
     async def publish_post(self, queue_item: PostQueue) -> bool:
+        """Опубликовать пост в Telegram."""
         try:
+            # Получаем данные целевого канала
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(TargetChannel).where(TargetChannel.id == queue_item.target_channel_id)
+                )
+                target = result.scalar_one_or_none()
+                
+                if not target:
+                    await self._mark_failed(queue_item, "Целевой канал не найден в базе")
+                    return False
+                
+                real_chat_id = target.channel_id  # Реальный Telegram chat_id
+                
+                # Получаем подпись проекта
+                result = await session.execute(
+                    select(Project).where(Project.id == queue_item.project_id)
+                )
+                project = result.scalar_one_or_none()
+                signature = project.signature if project else None
+            
             post_data = queue_item.post_data
             
+            # Удаление текста если настроено
             remove_text = post_data.get("remove_original_text", False)
             if remove_text:
                 caption = ""
             else:
                 caption = clean_caption(post_data.get("text", ""))
             
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(select(Project).where(Project.id == queue_item.project_id))
-                project = result.scalar_one_or_none()
-                signature = project.signature if project else None
-            
+            # Добавляем подпись проекта
             if signature:
                 if caption:
                     caption += f"\n\n{signature}"
                 else:
                     caption = signature
             
+            # Добавляем источник если включено
             if Config.SHOW_SOURCE_SIGNATURE:
                 source = post_data.get("source_username", "")
                 if source:
@@ -63,62 +82,180 @@ class TelegramPoster:
             media_path = post_data.get("media_path")
             media_type = post_data.get("media_type")
             
+            # Определяем parse_mode
             parse_mode = None
             if caption and ("<a href=" in caption or "<b>" in caption or "<i>" in caption):
                 parse_mode = "HTML"
             
+            # Отправка с медиа
             if media_path and os.path.exists(media_path):
                 try:
                     with open(media_path, "rb") as f:
                         if media_type == "photo":
-                            await self.bot.send_photo(chat_id=queue_item.target_channel_id, photo=f, caption=caption if caption else None, parse_mode=parse_mode)
+                            await self.bot.send_photo(
+                                chat_id=real_chat_id,
+                                photo=f,
+                                caption=caption if caption else None,
+                                parse_mode=parse_mode
+                            )
                         elif media_type == "video":
-                            await self.bot.send_video(chat_id=queue_item.target_channel_id, video=f, caption=caption if caption else None, parse_mode=parse_mode)
+                            await self.bot.send_video(
+                                chat_id=real_chat_id,
+                                video=f,
+                                caption=caption if caption else None,
+                                parse_mode=parse_mode
+                            )
                         else:
-                            await self.bot.send_document(chat_id=queue_item.target_channel_id, document=f, caption=caption if caption else None, parse_mode=parse_mode)
+                            await self.bot.send_document(
+                                chat_id=real_chat_id,
+                                document=f,
+                                caption=caption if caption else None,
+                                parse_mode=parse_mode
+                            )
+                    
+                    # Удаляем временный файл
                     try:
                         os.remove(media_path)
                     except:
                         pass
+                    
                     await self._mark_published(queue_item)
+                    logger.info(f"✅ Published post {queue_item.id} with media to {real_chat_id}")
                     return True
-                except Exception as e:
-                    logger.error(f"Failed to send media: {e}")
+                    
+                except TelegramError as e:
+                    logger.error(f"Failed to send media to {real_chat_id}: {e}")
+                    
+                    # Если ошибка из-за parse_mode, пробуем без него
+                    if parse_mode and "parse" in str(e).lower():
+                        try:
+                            with open(media_path, "rb") as f:
+                                if media_type == "photo":
+                                    await self.bot.send_photo(
+                                        chat_id=real_chat_id,
+                                        photo=f,
+                                        caption=caption if caption else None
+                                    )
+                                elif media_type == "video":
+                                    await self.bot.send_video(
+                                        chat_id=real_chat_id,
+                                        video=f,
+                                        caption=caption if caption else None
+                                    )
+                                else:
+                                    await self.bot.send_document(
+                                        chat_id=real_chat_id,
+                                        document=f,
+                                        caption=caption if caption else None
+                                    )
+                            
+                            try:
+                                os.remove(media_path)
+                            except:
+                                pass
+                            
+                            await self._mark_published(queue_item)
+                            logger.info(f"✅ Published post {queue_item.id} (no parse_mode)")
+                            return True
+                        except Exception as e2:
+                            logger.error(f"Failed to send without parse_mode: {e2}")
+                    
+                    # Пробуем отправить только текст
                     if caption:
                         try:
-                            await self.bot.send_message(chat_id=queue_item.target_channel_id, text=caption, disable_web_page_preview=True)
+                            await self.bot.send_message(
+                                chat_id=real_chat_id,
+                                text=caption,
+                                disable_web_page_preview=True
+                            )
+                            await self._mark_published(queue_item)
+                            logger.info(f"✅ Published post {queue_item.id} (text only after media fail)")
+                            return True
+                        except Exception as e3:
+                            logger.error(f"Failed to send text: {e3}")
+                    
+                    await self._mark_failed(queue_item, str(e)[:200])
+                    return False
+            
+            # Отправка только текста
+            elif caption:
+                try:
+                    await self.bot.send_message(
+                        chat_id=real_chat_id,
+                        text=caption,
+                        parse_mode=parse_mode,
+                        disable_web_page_preview=True
+                    )
+                    await self._mark_published(queue_item)
+                    logger.info(f"✅ Published post {queue_item.id} (text only)")
+                    return True
+                except TelegramError as e:
+                    # Пробуем без parse_mode
+                    if parse_mode:
+                        try:
+                            await self.bot.send_message(
+                                chat_id=real_chat_id,
+                                text=caption,
+                                disable_web_page_preview=True
+                            )
                             await self._mark_published(queue_item)
                             return True
                         except:
                             pass
-                    raise e
-            elif caption:
-                try:
-                    await self.bot.send_message(chat_id=queue_item.target_channel_id, text=caption, disable_web_page_preview=True)
-                    await self._mark_published(queue_item)
-                    return True
-                except Exception as e:
-                    logger.error(f"Failed to send text: {e}")
-                    raise e
+                    
+                    logger.error(f"Failed to send text to {real_chat_id}: {e}")
+                    await self._mark_failed(queue_item, str(e)[:200])
+                    return False
+            
+            # Пустой пост
             else:
+                logger.warning(f"Empty post {queue_item.id}")
                 await self._mark_failed(queue_item, "Empty post")
                 return False
-        except TelegramError as e:
-            await self._mark_failed(queue_item, str(e)[:200])
-            return False
+                
         except Exception as e:
+            logger.error(f"Unexpected error publishing post {queue_item.id}: {e}")
             await self._mark_failed(queue_item, str(e)[:200])
             return False
 
     async def _mark_published(self, queue_item: PostQueue):
+        """Отметить пост как опубликованный."""
         async with AsyncSessionLocal() as session:
-            await session.execute(update(PostQueue).where(PostQueue.id == queue_item.id).values(status="published", published_at=datetime.utcnow()))
-            published = PublishedPost(project_id=queue_item.project_id, target_channel_id=queue_item.target_channel_id, platform="telegram", source_channel_username=queue_item.post_data.get("source_username", ""), post_url=queue_item.post_data.get("url", ""), post_data=queue_item.post_data)
+            await session.execute(
+                update(PostQueue)
+                .where(PostQueue.id == queue_item.id)
+                .values(status="published", published_at=datetime.utcnow())
+            )
+            
+            post_data = queue_item.post_data
+            published = PublishedPost(
+                project_id=queue_item.project_id,
+                target_channel_id=queue_item.target_channel_id,
+                platform="telegram",
+                source_channel_username=post_data.get("source_username", ""),
+                post_url=post_data.get("url", ""),
+                post_data=post_data
+            )
             session.add(published)
-            await session.execute(update(TargetChannel).where(TargetChannel.channel_id == queue_item.target_channel_id).values(last_posted=datetime.utcnow()))
+            
+            # Обновляем last_posted у целевого канала
+            result = await session.execute(
+                select(TargetChannel).where(TargetChannel.id == queue_item.target_channel_id)
+            )
+            target = result.scalar_one_or_none()
+            if target:
+                target.last_posted = datetime.utcnow()
+            
             await session.commit()
+            logger.info(f"📊 Marked post {queue_item.id} as published")
 
     async def _mark_failed(self, queue_item: PostQueue, error_message: str):
+        """Отметить пост как failed."""
         async with AsyncSessionLocal() as session:
-            await session.execute(update(PostQueue).where(PostQueue.id == queue_item.id).values(status="failed", error_message=error_message))
+            await session.execute(
+                update(PostQueue)
+                .where(PostQueue.id == queue_item.id)
+                .values(status="failed", error_message=error_message)
+            )
             await session.commit()
+            logger.warning(f"❌ Marked post {queue_item.id} as failed: {error_message}")

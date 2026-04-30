@@ -57,6 +57,7 @@ class TelegramScraper:
         url = f"https://t.me/s/{username}"
         html = await self._fetch(url)
         if not html:
+            logger.error(f"Failed to fetch {url}")
             return []
         soup = BeautifulSoup(html, "lxml")
         posts = []
@@ -66,7 +67,7 @@ class TelegramScraper:
                 if post:
                     posts.append(post)
             except Exception as e:
-                logger.error(f"Parse error: {e}")
+                logger.error(f"Parse error for @{username}: {e}")
         posts.sort(key=lambda x: x.get("datetime", ""), reverse=True)
         return posts
 
@@ -95,7 +96,6 @@ class TelegramScraper:
         
         reactions = self._parse_reactions(msg_div)
         
-        # Медиа
         has_photo = False
         has_video = False
         media_url = None
@@ -144,64 +144,46 @@ class TelegramScraper:
                     media_url = src
         
         return {
-            "url": post_url, "message_id": message_id, "text": text,
-            "views": views, "reactions": reactions,
-            "has_photo": has_photo, "has_video": has_video,
+            "url": post_url,
+            "message_id": message_id,
+            "text": text,
+            "views": views,
+            "reactions": reactions,
+            "has_photo": has_photo,
+            "has_video": has_video,
             "has_media": has_photo or has_video,
-            "media_url": media_url, "media_type": media_type,
+            "media_url": media_url,
+            "media_type": media_type,
             "datetime": post_datetime
         }
 
     def _parse_reactions(self, msg_div) -> int:
         """
-        Парсинг реакций — только из блока tgme_widget_message_reactions.
-        Без лимитов, без поиска по всему HTML.
+        Парсинг реакций из span.tgme_reaction.
+        Каждый span содержит: эмодзи + число (например: 🤣778, 😁1.17K).
+        Извлекаем только число и суммируем.
         """
         total = 0
         
-        # Находим блок реакций
         reactions_div = msg_div.find("div", class_="tgme_widget_message_reactions")
         if not reactions_div:
             return 0
         
-        # Способ 1: span с классом, содержащим "count"
-        for span in reactions_div.find_all("span"):
-            classes = span.get("class", [])
-            if any("count" in c.lower() for c in classes):
-                count_text = span.get_text(strip=True)
-                if count_text:
-                    total += parse_number(count_text)
-        
-        # Способ 2: data-атрибуты с количеством
-        if total == 0:
-            for tag in reactions_div.find_all(attrs={"data-count": True}):
-                total += parse_number(tag.get("data-count", "0"))
-        
-        # Способ 3: эмодзи + число внутри блока реакций
-        if total == 0:
-            reactions_html = str(reactions_div)
-            # Ищем паттерн: 1-3 небуквенных символа + пробел + число
-            emoji_pattern = r'([^\w\s\d]{1,3})\s*(\d+)'
-            matches = re.findall(emoji_pattern, reactions_html)
+        # Ищем все span с классом tgme_reaction
+        for span in reactions_div.find_all("span", class_="tgme_reaction"):
+            text = span.get_text(strip=True)
+            if not text:
+                continue
             
-            # Исключаем служебные символы
-            excluded_emojis = {
-                '▶', '►', '➡', '⬅', '⬆', '⬇', '🔗', '📎',
-                '•', '·', '○', '●', '□', '■', '△', '▲',
-                '☆', '★', '�', '→', '←', '↑', '↓'
-            }
-            
-            for emoji, count_str in matches:
-                if emoji in excluded_emojis:
-                    continue
-                try:
-                    num = int(count_str)
-                    if num > 0:
-                        total += num
-                except:
-                    pass
+            # Извлекаем число из текста
+            # Паттерн: число может быть в конце строки, с K/M или без
+            # Например: "🤣778" -> "778", "🤣1.17K" -> "1.17K", "1" -> "1"
+            match = re.search(r'[\d]+(?:[.,]\d+)?[KkMm]?$', text)
+            if match:
+                num = parse_number(match.group())
+                total += num
         
-        # Способ 4: JSON-скрипты внутри сообщения
+        # Если через span не нашли — пробуем JSON
         if total == 0:
             scripts = msg_div.find_all("script", type="application/json")
             for script in scripts:
@@ -218,7 +200,7 @@ class TelegramScraper:
             return 0
         total = 0
         if isinstance(data, dict):
-            for key in ['reactions', 'reaction_count', 'count', 'total_reactions', 'reactionsCount', 'reactions_count']:
+            for key in ['reactions', 'reaction_count', 'count', 'total_reactions']:
                 if key in data:
                     try:
                         if isinstance(data[key], (int, float)):

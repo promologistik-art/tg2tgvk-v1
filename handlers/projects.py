@@ -31,7 +31,7 @@ async def my_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             create_text = f"\n\n{limit_msg}"
         
-        text = "📭 Нет проектов.\nПроект — связка источников и целевого канала (Telegram или VK)." + create_text
+        text = "📭 У вас пока нет проектов.\n\nПроект — это связка из источников и целевого канала.\nНапример: «Мемасы», «Книги», «Кино»" + create_text
         
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
@@ -39,27 +39,43 @@ async def my_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
         return
     
-    text = f"📁 <b>Проекты</b> ({len(projects)} / {user.max_projects})\n\n"
+    text = f"📁 <b>Ваши проекты</b> ({len(projects)} / {user.max_projects})\n\n"
+    if not has_access:
+        text += f"⚠️ {message}\n\n"
+    
     keyboard = []
     
     for p in projects:
         sources_count = await get_sources_count(p.id)
         target = await get_project_target(p.id)
-        current_icon = "👉 " if current_project and p.id == current_project.id else ""
-        platform_icon = "🟢" if target and target.platform == "telegram" else "🔵" if target and target.platform == "vk" else "⚪"
         
-        text += f"{current_icon}{platform_icon} <b>{p.name}</b>\n"
+        current_icon = "👉 " if current_project and p.id == current_project.id else ""
+        status_icon = "✅" if p.is_active else "❌"
+        
+        # Безопасное получение имени цели
+        target_name = 'не задана'
+        if target:
+            if target.platform == 'telegram':
+                target_name = target.channel_title or 'Канал Telegram'
+            elif target.platform == 'vk':
+                target_name = target.vk_group_name or 'Группа VK'
+        
+        text += f"{current_icon}{status_icon} <b>{p.name}</b>\n"
         text += f"   📥 Источников: {sources_count}\n"
-        text += f"   📤 Цель: {target.channel_title or target.vk_group_name or 'не задана'}\n"
+        text += f"   📤 Цель: {target_name}\n"
         text += f"   📊 Сегодня: {p.posts_parsed_today} / {p.posts_posted_today}\n\n"
         
         if not current_project or p.id != current_project.id:
             keyboard.append([InlineKeyboardButton(f"✅ Выбрать «{p.name}»", callback_data=f"select_project_{p.id}")])
-        keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data=f"stats_project_{p.id}"), InlineKeyboardButton("❌ Удалить", callback_data=f"delete_project_{p.id}")])
+        
+        keyboard.append([
+            InlineKeyboardButton(f"📊 Статистика", callback_data=f"stats_project_{p.id}"),
+            InlineKeyboardButton(f"❌ Удалить", callback_data=f"delete_project_{p.id}")
+        ])
     
     can_create, _ = await check_action_limit(user, "create_project")
     if len(projects) < user.max_projects and (can_create or user.is_admin):
-        keyboard.append([InlineKeyboardButton("➕ Создать проект", callback_data="create_project")])
+        keyboard.append([InlineKeyboardButton("➕ Создать новый проект", callback_data="create_project")])
     
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -82,7 +98,7 @@ async def projects_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not can_create and not user.is_admin:
             await query.edit_message_text(f"❌ {limit_msg}")
             return
-        await query.edit_message_text("📁 Введите название проекта:")
+        await query.edit_message_text("📁 Введите название нового проекта:")
         context.user_data['awaiting_project_name'] = True
         return
     
@@ -93,12 +109,18 @@ async def projects_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             project = result.scalar_one_or_none()
         if project:
             context.user_data[CURRENT_PROJECT_KEY] = project.id
-            await query.edit_message_text(f"✅ Выбран «{project.name}»")
+            await query.edit_message_text(f"✅ Выбран проект «{project.name}»")
     
     elif data.startswith("delete_project_"):
         project_id = int(data.replace("delete_project_", ""))
-        keyboard = [[InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_{project_id}"), InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]]
-        await query.edit_message_text("⚠️ Удалить проект?", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_{project_id}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")],
+        ]
+        await query.edit_message_text(
+            "⚠️ Удалить проект? Все источники и настройки будут потеряны.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     
     elif data.startswith("confirm_delete_"):
         project_id = int(data.replace("confirm_delete_", ""))
@@ -113,7 +135,7 @@ async def projects_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✅ Проект удалён")
     
     elif data == "cancel_delete":
-        await query.edit_message_text("❌ Отменено")
+        await query.edit_message_text("❌ Удаление отменено")
     
     elif data.startswith("stats_project_"):
         project_id = int(data.replace("stats_project_", ""))
@@ -128,24 +150,43 @@ async def handle_project_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     telegram_id = update.effective_user.id
     
     if len(name) < 2 or len(name) > 50:
-        await update.message.reply_text("❌ Название от 2 до 50 символов.")
+        await update.message.reply_text("❌ Название должно быть от 2 до 50 символов.")
+        return
+    
+    has_access, access_msg, user = await check_user_access(telegram_id)
+    if not has_access:
+        await update.message.reply_text(access_msg)
+        context.user_data['awaiting_project_name'] = False
+        return
+    
+    can_create, limit_msg = await check_action_limit(user, "create_project")
+    if not can_create and not user.is_admin:
+        await update.message.reply_text(f"❌ {limit_msg}")
+        context.user_data['awaiting_project_name'] = False
         return
     
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
-        user = result.scalar_one()
-        can_create, limit_msg = await check_action_limit(user, "create_project")
-        if not can_create and not user.is_admin:
-            await update.message.reply_text(f"❌ {limit_msg}")
-            return
-        
-        project = Project(user_id=telegram_id, name=name)
+        project = Project(
+            user_id=telegram_id,
+            name=name,
+            check_interval_minutes=user.min_check_interval_minutes,
+            post_interval_hours=max(user.min_post_interval_minutes // 60, 1),
+            active_hours_start=Config.DEFAULT_ACTIVE_HOURS_START,
+            active_hours_end=Config.DEFAULT_ACTIVE_HOURS_END
+        )
         session.add(project)
         await session.commit()
         context.user_data[CURRENT_PROJECT_KEY] = project.id
     
     context.user_data['awaiting_project_name'] = False
-    await update.message.reply_text(f"✅ Проект «{name}» создан!\n• /add_target — добавить цель\n• /add_source — добавить источники")
+    
+    await update.message.reply_text(
+        f"✅ Проект «{name}» создан!\n\n"
+        f"Теперь добавьте:\n"
+        f"• /add_target — целевой канал\n"
+        f"• /add_source — каналы-источники\n\n"
+        f"💡 После добавления источников проект начнёт работу автоматически."
+    )
 
 
 async def show_project_stats(query, project_id: int):
@@ -157,22 +198,33 @@ async def show_project_stats(query, project_id: int):
     target = await get_project_target(project_id)
     
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(PostQueue).where(PostQueue.project_id == project_id, PostQueue.status == "pending"))
+        result = await session.execute(
+            select(PostQueue).where(PostQueue.project_id == project_id, PostQueue.status == "pending")
+        )
         pending = len(result.scalars().all())
     
-    platform_text = "Telegram" if target and target.platform == "telegram" else "VK" if target and target.platform == "vk" else "—"
-    target_text = target.channel_title if target and target.platform == "telegram" else target.vk_group_name if target and target.platform == "vk" else "не задана"
+    # Безопасное получение имени цели
+    target_name = 'не задана'
+    platform_name = '—'
+    if target:
+        if target.platform == 'telegram':
+            target_name = target.channel_title or 'Канал Telegram'
+            platform_name = 'Telegram'
+        elif target.platform == 'vk':
+            target_name = target.vk_group_name or 'Группа VK'
+            platform_name = 'VK'
     
     text = (
-        f"📊 <b>«{project.name}»</b>\n\n"
+        f"📊 <b>Статистика «{project.name}»</b>\n\n"
         f"📥 Источников: {sources_count}\n"
-        f"📤 Цель ({platform_text}): {target_text}\n"
-        f"⏰ Интервал: {project.check_interval_minutes} мин\n"
-        f"📈 Сегодня: {project.posts_parsed_today} / {project.posts_posted_today}\n"
+        f"📤 Цель ({platform_name}): {target_name}\n"
+        f"⏰ Интервал парсинга: {project.check_interval_minutes} мин\n"
+        f"📅 Интервал публикации: {project.post_interval_hours} ч\n"
+        f"📈 Сегодня: спарсено {project.posts_parsed_today}, опубликовано {project.posts_posted_today}\n"
         f"📬 В очереди: {pending}"
     )
     
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_projects")]]
+    keyboard = [[InlineKeyboardButton("◀️ Назад к проектам", callback_data="back_to_projects")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 

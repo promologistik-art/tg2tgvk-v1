@@ -135,6 +135,9 @@ class Scheduler:
         
         posts_to_publish = []
         total_parsed = 0
+        skipped_ads = 0
+        skipped_forwarded = 0
+        skipped_links = 0
         
         async with TelegramScraper() as scraper:
             for source in sources:
@@ -155,6 +158,7 @@ class Scheduler:
                     if await is_post_parsed(project.id, post["url"]):
                         continue
                     
+                    # Фильтр по типу медиа
                     if source.media_filter == "photo_only" and not post.get("has_media"):
                         continue
                     if source.media_filter == "photo_only" and post.get("media_type") == "video":
@@ -163,6 +167,22 @@ class Scheduler:
                         continue
                     if source.media_filter == "video_only" and post.get("media_type") == "photo":
                         continue
+                    
+                    # Пропускаем рекламу
+                    if post.get("is_advertisement", False):
+                        skipped_ads += 1
+                        logger.debug(f"Skipping ad from @{source.channel_username}: {post.get('url', '')}")
+                        continue
+                    
+                    # Опционально: пропускаем пересланные посты
+                    # if post.get("is_forwarded", False):
+                    #     skipped_forwarded += 1
+                    #     continue
+                    
+                    # Опционально: пропускаем посты с внешними ссылками
+                    # if post.get("has_external_links", False):
+                    #     skipped_links += 1
+                    #     continue
                     
                     post["source_username"] = source.channel_username
                     post["source_title"] = source.channel_title
@@ -213,6 +233,10 @@ class Scheduler:
                             .values(last_parsed=datetime.utcnow(), last_post_url=best_post["url"])
                         )
                         await session.commit()
+                else:
+                    logger.info(f"😴 @{source.channel_username}: no suitable posts")
+        
+        logger.info(f"📊 Skipped: {skipped_ads} ads, {skipped_forwarded} forwarded, {skipped_links} with links")
         
         if posts_to_publish:
             logger.info(f"📤 Found {len(posts_to_publish)} posts")

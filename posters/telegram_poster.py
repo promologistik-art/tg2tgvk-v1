@@ -72,6 +72,9 @@ class TelegramPoster:
             media_path = post_data.get("media_path")
             media_type = post_data.get("media_type")
             
+            # ОТЛАДОЧНЫЙ ЛОГ
+            logger.info(f"📤 Publishing post {queue_item.id}: media_path={media_path}, exists={os.path.exists(media_path) if media_path else 'N/A'}, media_type={media_type}, caption_len={len(caption) if caption else 0}")
+            
             # ЗАЩИТА: не публикуем пустые посты
             if not caption and not (media_path and os.path.exists(media_path)):
                 logger.warning(f"⚠️ Empty post {queue_item.id} (no text and no media)")

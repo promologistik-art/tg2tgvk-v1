@@ -25,7 +25,9 @@ from handlers import (
     set_post_start_time_callback,
     set_signature_start, set_signature_input,
     status, project_stats,
-    parse_now, queue_status, post_now, clear_old_queue, clear_failed_queue, reset_history,
+    parse_now, queue_status, post_now,
+    clear_old_queue, clear_failed_queue, clear_all_queue, clear_project_queue,
+    reset_history,
     admin_panel, admin_callback, admin_back_callback,
     admin_set_tariff_start, admin_extend_trial_start,
     broadcast_start, broadcast_send,
@@ -151,6 +153,8 @@ async def main():
     app.add_handler(CommandHandler("postnow", post_now))
     app.add_handler(CommandHandler("clear_queue", clear_old_queue))
     app.add_handler(CommandHandler("clear_failed", clear_failed_queue))
+    app.add_handler(CommandHandler("clear_all", clear_all_queue))
+    app.add_handler(CommandHandler("clear_project", clear_project_queue))
     app.add_handler(CommandHandler("reset_history", reset_history))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("admin_set_tariff", admin_set_tariff_start))

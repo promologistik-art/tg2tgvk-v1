@@ -82,7 +82,6 @@ class Scheduler:
                 if not user.is_admin:
                     interval = max(interval, user.min_check_interval_minutes)
                 
-                # Проверяем, прошло ли достаточно времени
                 last_check = self._last_check.get(project.id)
                 if last_check:
                     elapsed = (now - last_check).total_seconds() / 60
@@ -136,8 +135,6 @@ class Scheduler:
         posts_to_publish = []
         total_parsed = 0
         skipped_ads = 0
-        skipped_forwarded = 0
-        skipped_links = 0
         
         async with TelegramScraper() as scraper:
             for source in sources:
@@ -152,42 +149,29 @@ class Scheduler:
                 
                 best_post = None
                 best_score = -1
-                best_is_fallback = True
                 
                 for post in posts:
                     if await is_post_parsed(project.id, post["url"]):
                         continue
                     
                     # Фильтр по типу медиа
-                    if source.media_filter == "photo_only" and not post.get("has_media"):
-                        continue
-                    if source.media_filter == "photo_only" and post.get("media_type") == "video":
-                        continue
-                    if source.media_filter == "video_only" and not post.get("has_media"):
-                        continue
-                    if source.media_filter == "video_only" and post.get("media_type") == "photo":
-                        continue
+                    if source.media_filter == "photo_only":
+                        if not post.get("has_media") or post.get("media_type") != "photo":
+                            continue
+                    if source.media_filter == "video_only":
+                        if not post.get("has_media") or post.get("media_type") != "video":
+                            continue
                     
                     # Пропускаем рекламу
                     if post.get("is_advertisement", False):
                         skipped_ads += 1
-                        logger.debug(f"Skipping ad from @{source.channel_username}: {post.get('url', '')}")
                         continue
-                    
-                    # Опционально: пропускаем пересланные посты
-                    # if post.get("is_forwarded", False):
-                    #     skipped_forwarded += 1
-                    #     continue
-                    
-                    # Опционально: пропускаем посты с внешними ссылками
-                    # if post.get("has_external_links", False):
-                    #     skipped_links += 1
-                    #     continue
                     
                     post["source_username"] = source.channel_username
                     post["source_title"] = source.channel_title
                     post["media_filter"] = source.media_filter
                     post["remove_original_text"] = source.remove_original_text
+                    post["max_video_duration"] = source.max_video_duration
                     
                     post_time = datetime.utcnow()
                     if post.get("datetime"):
@@ -198,17 +182,26 @@ class Scheduler:
                     
                     score, is_fallback = calculate_score(post, source.criteria, post_time)
                     
-                    if not is_fallback and score > best_score:
-                        best_score = score
-                        best_post = post
-                        best_is_fallback = False
-                    elif best_is_fallback and is_fallback and score > best_score:
+                    # Пропускаем fallback-посты (не прошедшие критерии)
+                    if is_fallback:
+                        continue
+                    
+                    if score > best_score:
                         best_score = score
                         best_post = post
                 
                 if best_post:
-                    has_content = best_post.get("text") or (best_post.get("has_media") and best_post.get("media_url"))
-                    if not has_content:
+                    # Проверяем, что пост имеет контент
+                    has_text = bool(best_post.get("text", "").strip())
+                    has_media = best_post.get("has_media") and best_post.get("media_url")
+                    
+                    if not has_text and not has_media:
+                        logger.warning(f"⚠️ Skipping empty post from @{source.channel_username}")
+                        continue
+                    
+                    # Если текст удаляется, но медиа нет — пропускаем
+                    if source.remove_original_text and not has_media:
+                        logger.warning(f"⚠️ Skipping text-only post (text removed) from @{source.channel_username}")
                         continue
                     
                     logger.info(f"🏆 Selected from @{source.channel_username}: score={best_score}")
@@ -223,6 +216,11 @@ class Scheduler:
                         
                         if await scraper.download_media(best_post["media_url"], media_path):
                             best_post["media_path"] = media_path
+                        else:
+                            # Медиа не скачалось — если текст удалён, пропускаем
+                            if source.remove_original_text:
+                                logger.warning(f"⚠️ Media download failed and text removed, skipping")
+                                continue
                     
                     posts_to_publish.append(best_post)
                     
@@ -236,7 +234,7 @@ class Scheduler:
                 else:
                     logger.info(f"😴 @{source.channel_username}: no suitable posts")
         
-        logger.info(f"📊 Skipped: {skipped_ads} ads, {skipped_forwarded} forwarded, {skipped_links} with links")
+        logger.info(f"📊 Skipped: {skipped_ads} ads")
         
         if posts_to_publish:
             logger.info(f"📤 Found {len(posts_to_publish)} posts")

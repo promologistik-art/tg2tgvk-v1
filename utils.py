@@ -21,8 +21,8 @@ def calculate_score(post: dict, criteria: dict, post_time: datetime = None) -> T
     Расчет очков поста на основе критериев.
     Возвращает (score, is_fallback)
     
-    is_fallback = True если пост не прошёл критерии, но мы берём его как fallback (самый свежий)
-    is_fallback = False если пост прошёл критерии
+    Если пост не проходит критерии — возвращает (-1, True).
+    Без fallback'а на timestamp.
     """
     views = post.get("views", 0)
     reactions = post.get("reactions", 0)
@@ -35,46 +35,27 @@ def calculate_score(post: dict, criteria: dict, post_time: datetime = None) -> T
     
     if min_views and views < min_views:
         passes_criteria = False
-    
     if min_reactions and reactions < min_reactions:
         passes_criteria = False
     
-    # Если нет критериев — считаем что проходит
+    # Если критерии не заданы — считаем что проходит
     if not min_views and not min_reactions:
         passes_criteria = True
     
     if passes_criteria:
-        # Основной score
         score = 0
         if min_views:
-            score += (views // 1000) * 10  # каждые 1000 просмотров = 10 очков
+            score += (views // 1000) * 10
         if min_reactions:
-            score += reactions  # каждая реакция = 1 очко
+            score += reactions
         if post.get("has_media", False):
-            score += 5  # бонус за медиа
-        
+            score += 5
         if score == 0:
             score = 1
-        
         return (score, False)
     else:
-        # Fallback — используем timestamp (чем новее, тем выше score)
-        if post_time:
-            # Используем timestamp поста
-            score = int(post_time.timestamp())
-        else:
-            # Если нет времени, пробуем распарсить из datetime строки
-            dt_str = post.get("datetime", "")
-            if dt_str:
-                try:
-                    dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-                    score = int(dt.timestamp())
-                except:
-                    score = 0
-            else:
-                score = 0
-        
-        return (score, True)
+        # Пост не прошёл критерии — возвращаем -1
+        return (-1, True)
 
 
 def clean_caption(text: str) -> str:

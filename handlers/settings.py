@@ -156,7 +156,7 @@ async def set_post_interval_callback(update: Update, context: ContextTypes.DEFAU
     for hour in range(6, 24):
         for minute in [0, 30]:
             if hour == 23 and minute == 30:
-                break  # 23:30 — последний слот
+                break
             time_str = f"{hour:02d}:{minute:02d}"
             callback_data = f"starttime_{hour}_{minute}"
             row.append(InlineKeyboardButton(time_str, callback_data=callback_data))
@@ -166,7 +166,6 @@ async def set_post_interval_callback(update: Update, context: ContextTypes.DEFAU
     if row:
         keyboard.append(row)
     
-    # Кнопки внизу
     keyboard.append([InlineKeyboardButton("🌙 Круглосуточно", callback_data="starttime_24_7")])
     keyboard.append([InlineKeyboardButton("↩️ Оставить текущее", callback_data="starttime_skip")])
     
@@ -218,7 +217,6 @@ async def set_post_start_time_callback(update: Update, context: ContextTypes.DEF
             f"🕐 Время старта без изменений.",
             parse_mode="HTML"
         )
-        
         context.user_data.pop('temp_project_id', None)
         context.user_data.pop('temp_post_interval', None)
         return ConversationHandler.END
@@ -243,7 +241,6 @@ async def set_post_start_time_callback(update: Update, context: ContextTypes.DEF
             f"💡 Бот будет публиковать посты 24/7 каждые {minutes} минут.",
             parse_mode="HTML"
         )
-        
         context.user_data.pop('temp_project_id', None)
         context.user_data.pop('temp_post_interval', None)
         return ConversationHandler.END
@@ -300,16 +297,13 @@ def parse_signature_input(text: str) -> str:
         parts = text.split("|", 1)
         label = parts[0].strip()
         link = parts[1].strip()
-        
         if link:
             if not link.startswith("http"):
                 link = "https://" + link
-            
             username = extract_username_from_link(link)
             if username:
                 if f"@{username}" not in label:
                     label = f"{label} @{username}"
-            
             return f'<a href="{link}">{label}</a>'
     
     def replace_link(match):
@@ -330,7 +324,6 @@ def parse_signature_input(text: str) -> str:
             username = match.group(1)
             link = f"https://t.me/{username}"
             return f'<a href="{link}">@{username}</a>'
-        
         text = re.sub(username_pattern, make_username_clickable, text)
         return text
     
@@ -392,7 +385,6 @@ async def set_signature_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         signature = parse_signature_input(text)
         display_text = get_display_text(signature)
-        
         reply = (
             f"✅ <b>Подпись установлена!</b>\n\n"
             f"<b>В посте будет выглядеть так:</b>\n"

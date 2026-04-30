@@ -5,7 +5,10 @@ from sqlalchemy import select, delete
 from config import Config
 from database import AsyncSessionLocal
 from models import User, Project, SourceChannel, TargetChannel, PostQueue
-from .utils import get_current_project, get_sources_count, get_project_target, get_user_projects_count, check_user_access, check_action_limit
+from .utils import (
+    get_current_project, get_sources_count, get_project_target,
+    get_user_projects_count, check_user_access, check_action_limit
+)
 from .constants import CURRENT_PROJECT_KEY
 
 logger = logging.getLogger(__name__)
@@ -203,7 +206,6 @@ async def show_project_stats(query, project_id: int):
         )
         pending = len(result.scalars().all())
     
-    # Безопасное получение имени цели
     target_name = 'не задана'
     platform_name = '—'
     if target:

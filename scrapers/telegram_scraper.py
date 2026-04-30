@@ -10,6 +10,15 @@ from utils import parse_number
 
 logger = logging.getLogger(__name__)
 
+# Маркеры рекламы
+AD_KEYWORDS = [
+    '#реклама', '#спонсор', '#партнер', '#партнёр', '#ad', '#рекламныйпост',
+    'реклама', 'спонсор', 'партнёрский', 'промо', 'сообщение от партнёра',
+    'на правах рекламы', 'платное размещение', 'спонсируется', 'advertisement',
+    '#sponsored', '#promo', '#sponsor'
+]
+
+
 class TelegramScraper:
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
@@ -57,7 +66,6 @@ class TelegramScraper:
         url = f"https://t.me/s/{username}"
         html = await self._fetch(url)
         if not html:
-            logger.error(f"Failed to fetch {url}")
             return []
         soup = BeautifulSoup(html, "lxml")
         posts = []
@@ -65,11 +73,49 @@ class TelegramScraper:
             try:
                 post = self._parse_message(msg_div, username)
                 if post:
+                    # Проверяем на рекламу
+                    if self._is_advertisement(post):
+                        logger.debug(f"Skipping ad: {post.get('url', '')}")
+                        continue
                     posts.append(post)
             except Exception as e:
-                logger.error(f"Parse error for @{username}: {e}")
+                logger.error(f"Parse error: {e}")
         posts.sort(key=lambda x: x.get("datetime", ""), reverse=True)
         return posts
+
+    def _is_advertisement(self, post: Dict) -> bool:
+        """Проверяет, является ли пост рекламным."""
+        # Проверка по ключевым словам в тексте
+        text = post.get("text", "").lower()
+        for keyword in AD_KEYWORDS:
+            if keyword.lower() in text:
+                return True
+        
+        # Проверка, является ли пост репостом (частый признак рекламы)
+        if post.get("is_forwarded", False):
+            # Репост не всегда реклама, но часто
+            # Можно добавить дополнительную логику
+            pass
+        
+        return False
+
+    def _is_forwarded(self, msg_div) -> bool:
+        """Проверяет, является ли сообщение пересланным."""
+        # Ищем блок пересланного сообщения
+        forwarded = msg_div.find("div", class_="tgme_widget_message_forwarded")
+        if forwarded:
+            return True
+        # Ищем атрибут data-forward
+        if msg_div.get("data-forward"):
+            return True
+        return False
+
+    def _has_external_tme_links(self, text: str, current_username: str = None) -> bool:
+        """Проверяет наличие t.me ссылок на другие каналы."""
+        links = re.findall(r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)', text)
+        if current_username:
+            links = [l for l in links if l != current_username]
+        return len(links) > 0
 
     def _parse_message(self, msg_div, username: str) -> Optional[Dict]:
         data_post = msg_div.get("data-post")
@@ -95,6 +141,8 @@ class TelegramScraper:
             views = parse_number(views_span.get_text(strip=True))
         
         reactions = self._parse_reactions(msg_div)
+        is_forwarded = self._is_forwarded(msg_div)
+        has_external_links = self._has_external_tme_links(text, username)
         
         has_photo = False
         has_video = False
@@ -154,36 +202,31 @@ class TelegramScraper:
             "has_media": has_photo or has_video,
             "media_url": media_url,
             "media_type": media_type,
-            "datetime": post_datetime
+            "datetime": post_datetime,
+            "is_forwarded": is_forwarded,
+            "has_external_links": has_external_links,
+            "is_advertisement": False  # Будет проверено в get_posts
         }
 
     def _parse_reactions(self, msg_div) -> int:
-        """
-        Парсинг реакций из span.tgme_reaction.
-        Каждый span содержит: эмодзи + число (например: 🤣778, 😁1.17K).
-        Извлекаем только число и суммируем.
-        """
+        """Парсинг реакций из span.tgme_reaction."""
         total = 0
         
         reactions_div = msg_div.find("div", class_="tgme_widget_message_reactions")
         if not reactions_div:
             return 0
         
-        # Ищем все span с классом tgme_reaction
         for span in reactions_div.find_all("span", class_="tgme_reaction"):
             text = span.get_text(strip=True)
             if not text:
                 continue
             
-            # Извлекаем число из текста
-            # Паттерн: число может быть в конце строки, с K/M или без
-            # Например: "🤣778" -> "778", "🤣1.17K" -> "1.17K", "1" -> "1"
             match = re.search(r'[\d]+(?:[.,]\d+)?[KkMm]?$', text)
             if match:
                 num = parse_number(match.group())
-                total += num
+                if num > 0:
+                    total += num
         
-        # Если через span не нашли — пробуем JSON
         if total == 0:
             scripts = msg_div.find_all("script", type="application/json")
             for script in scripts:

@@ -73,7 +73,6 @@ class TelegramScraper:
             try:
                 post = self._parse_message(msg_div, username)
                 if post:
-                    # Проверяем на рекламу
                     if self._is_advertisement(post):
                         logger.debug(f"Skipping ad: {post.get('url', '')}")
                         continue
@@ -84,34 +83,21 @@ class TelegramScraper:
         return posts
 
     def _is_advertisement(self, post: Dict) -> bool:
-        """Проверяет, является ли пост рекламным."""
-        # Проверка по ключевым словам в тексте
         text = post.get("text", "").lower()
         for keyword in AD_KEYWORDS:
             if keyword.lower() in text:
                 return True
-        
-        # Проверка, является ли пост репостом (частый признак рекламы)
-        if post.get("is_forwarded", False):
-            # Репост не всегда реклама, но часто
-            # Можно добавить дополнительную логику
-            pass
-        
         return False
 
     def _is_forwarded(self, msg_div) -> bool:
-        """Проверяет, является ли сообщение пересланным."""
-        # Ищем блок пересланного сообщения
         forwarded = msg_div.find("div", class_="tgme_widget_message_forwarded")
         if forwarded:
             return True
-        # Ищем атрибут data-forward
         if msg_div.get("data-forward"):
             return True
         return False
 
     def _has_external_tme_links(self, text: str, current_username: str = None) -> bool:
-        """Проверяет наличие t.me ссылок на другие каналы."""
         links = re.findall(r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)', text)
         if current_username:
             links = [l for l in links if l != current_username]
@@ -205,11 +191,10 @@ class TelegramScraper:
             "datetime": post_datetime,
             "is_forwarded": is_forwarded,
             "has_external_links": has_external_links,
-            "is_advertisement": False  # Будет проверено в get_posts
+            "is_advertisement": False
         }
 
     def _parse_reactions(self, msg_div) -> int:
-        """Парсинг реакций из span.tgme_reaction."""
         total = 0
         
         reactions_div = msg_div.find("div", class_="tgme_widget_message_reactions")
@@ -265,6 +250,11 @@ class TelegramScraper:
 
     async def download_media(self, media_url: str, save_path: str) -> bool:
         try:
+            if not media_url:
+                logger.warning("❌ download_media: empty URL")
+                return False
+            
+            logger.info(f"⬇️ Downloading {media_url[:100]}...")
             headers = {
                 "User-Agent": Config.SCRAPER_USER_AGENT,
                 "Referer": "https://t.me/",
@@ -273,7 +263,10 @@ class TelegramScraper:
                 if resp.status == 200:
                     with open(save_path, "wb") as f:
                         f.write(await resp.read())
+                    logger.info(f"✅ Downloaded to {save_path}")
                     return True
+                else:
+                    logger.warning(f"❌ HTTP {resp.status} for {media_url[:100]}")
         except Exception as e:
-            logger.error(f"Download failed: {e}")
+            logger.error(f"❌ Download failed: {e}")
         return False

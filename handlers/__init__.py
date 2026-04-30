@@ -38,3 +38,10 @@ from .admin import (
 )
 from .test import test_scraper, debug_reactions
 from .utils import setup_bot_commands
+
+from .parsing import (
+    parse_now, queue_status, post_now, 
+    clear_old_queue, clear_failed_queue, 
+    clear_all_queue, clear_project_queue,
+    reset_history
+)

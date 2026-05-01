@@ -31,11 +31,7 @@ from .settings import (
 )
 from .stats import status, project_stats
 from .parsing import parse_now, queue_status, post_now, clear_old_queue, clear_failed_queue, reset_history
-from .admin import (
-    admin_panel, admin_callback, admin_back_callback,
-    admin_set_tariff_start, admin_extend_trial_start,
-    broadcast_start, broadcast_send
-)
+с
 from .test import test_scraper, debug_reactions
 from .utils import setup_bot_commands
 

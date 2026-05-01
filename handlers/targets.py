@@ -233,7 +233,7 @@ async def add_target_forward(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await session.commit()
     
     await update.message.reply_text(
-        f"✅ <b>Канал «{chat.title}» добавлен!</b>\n\n"
+        f"✅ Канал «{chat.title}» добавлен!\n\n"
         f"Теперь добавьте источники: /add_source"
     )
     

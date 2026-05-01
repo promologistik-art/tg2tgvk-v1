@@ -296,9 +296,10 @@ async def remove_text_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if sources_count == 1 and target_channel:
         await query.message.reply_text(
             f"✅ <b>Проект «{project_name}» готов к работе!</b>\n\n"
-            f"• /set_interval — настроить частоту\n"
-            f"• /set_post_interval — интервал публикации\n"
-            f"• /parse — запустить парсинг",
+            f"• /set_interval — настроить частоту парсинга\n"
+            f"• /set_post_interval — интервал публикаций\n"
+            f"• /parse — запустить парсинг"
+            f"• /add_source — добавить ещё источник\n",
             parse_mode="HTML"
         )
     

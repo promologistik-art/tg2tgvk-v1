@@ -31,7 +31,6 @@ class TelegramPoster:
             logger.info(f"📨 Post queued for project {project_id}")
 
     async def publish_post(self, queue_item: PostQueue) -> bool:
-        # Получаем данные в отдельной сессии (только чтение)
         real_chat_id = None
         signature = None
         
@@ -81,7 +80,6 @@ class TelegramPoster:
         media_path = post_data.get("media_path")
         media_type = post_data.get("media_type")
         
-        # Не публикуем пустые посты
         if not caption and not (media_path and os.path.exists(media_path)):
             if remove_text:
                 await self._mark_failed(queue_item, "Текст удалён, медиа нет")
@@ -100,19 +98,19 @@ class TelegramPoster:
                         await self.bot.send_photo(
                             chat_id=real_chat_id, photo=f,
                             caption=caption if caption else None,
-                            parse_mode=parse_mode, timeout=120
+                            parse_mode=parse_mode
                         )
                     elif media_type == "video":
                         await self.bot.send_video(
                             chat_id=real_chat_id, video=f,
                             caption=caption if caption else None,
-                            parse_mode=parse_mode, timeout=120
+                            parse_mode=parse_mode
                         )
                     else:
                         await self.bot.send_document(
                             chat_id=real_chat_id, document=f,
                             caption=caption if caption else None,
-                            parse_mode=parse_mode, timeout=120
+                            parse_mode=parse_mode
                         )
                 
                 try:
@@ -131,20 +129,11 @@ class TelegramPoster:
                     try:
                         with open(media_path, "rb") as f:
                             if media_type == "photo":
-                                await self.bot.send_photo(
-                                    chat_id=real_chat_id, photo=f,
-                                    caption=caption if caption else None, timeout=120
-                                )
+                                await self.bot.send_photo(chat_id=real_chat_id, photo=f, caption=caption if caption else None)
                             elif media_type == "video":
-                                await self.bot.send_video(
-                                    chat_id=real_chat_id, video=f,
-                                    caption=caption if caption else None, timeout=120
-                                )
+                                await self.bot.send_video(chat_id=real_chat_id, video=f, caption=caption if caption else None)
                             else:
-                                await self.bot.send_document(
-                                    chat_id=real_chat_id, document=f,
-                                    caption=caption if caption else None, timeout=120
-                                )
+                                await self.bot.send_document(chat_id=real_chat_id, document=f, caption=caption if caption else None)
                         try:
                             os.remove(media_path)
                         except:
@@ -156,10 +145,7 @@ class TelegramPoster:
                 
                 if caption:
                     try:
-                        await self.bot.send_message(
-                            chat_id=real_chat_id, text=caption,
-                            disable_web_page_preview=True, timeout=60
-                        )
+                        await self.bot.send_message(chat_id=real_chat_id, text=caption, disable_web_page_preview=True)
                         await self._mark_published(queue_item)
                         return True
                     except:
@@ -171,19 +157,13 @@ class TelegramPoster:
         
         elif caption:
             try:
-                await self.bot.send_message(
-                    chat_id=real_chat_id, text=caption,
-                    parse_mode=parse_mode, disable_web_page_preview=True, timeout=60
-                )
+                await self.bot.send_message(chat_id=real_chat_id, text=caption, parse_mode=parse_mode, disable_web_page_preview=True)
                 await self._mark_published(queue_item)
                 return True
             except TelegramError as e:
                 if parse_mode:
                     try:
-                        await self.bot.send_message(
-                            chat_id=real_chat_id, text=caption,
-                            disable_web_page_preview=True, timeout=60
-                        )
+                        await self.bot.send_message(chat_id=real_chat_id, text=caption, disable_web_page_preview=True)
                         await self._mark_published(queue_item)
                         return True
                     except:
@@ -219,7 +199,6 @@ class TelegramPoster:
             await session.commit()
 
     async def _mark_failed(self, queue_item: PostQueue, error_message: str):
-        # Очищаем сообщение от технических деталей
         clean_error = error_message[:150].replace("\n", " ").strip()
         async with AsyncSessionLocal() as session:
             await session.execute(

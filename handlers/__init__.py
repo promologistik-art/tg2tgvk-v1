@@ -30,14 +30,15 @@ from .settings import (
     set_signature_start, set_signature_input
 )
 from .stats import status, project_stats
-from .parsing import parse_now, queue_status, post_now, clear_old_queue, clear_failed_queue, reset_history
-
-from .test import test_scraper, debug_reactions
-from .utils import setup_bot_commands
-
 from .parsing import (
-    parse_now, queue_status, post_now, 
-    clear_old_queue, clear_failed_queue, 
-    clear_all_queue, clear_project_queue,
+    parse_now, queue_status, post_now,
+    clear_old_queue, clear_failed_queue, clear_all_queue, clear_project_queue,
     reset_history
 )
+from .admin import (
+    admin_panel, admin_callback, admin_back_callback,
+    admin_set_tariff_start, admin_extend_trial_start,
+    broadcast_start, broadcast_send
+)
+from .test import test_scraper, debug_reactions
+from .utils import setup_bot_commands

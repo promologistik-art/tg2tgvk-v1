@@ -26,7 +26,6 @@ parsed_urls = {}
 
 async def migrate_to_projects():
     async with AsyncSessionLocal() as session:
-        # Базовая миграция для новых таблиц
         result = await session.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
         )
@@ -39,82 +38,60 @@ async def migrate_to_projects():
             users = result.scalars().all()
             
             for user in users:
-                result = await session.execute(
-                    select(SourceChannel).where(SourceChannel.user_id == user.telegram_id)
-                )
+                result = await session.execute(select(SourceChannel).where(SourceChannel.user_id == user.telegram_id))
                 old_sources = result.scalars().all()
-                
-                result = await session.execute(
-                    select(TargetChannel).where(TargetChannel.user_id == user.telegram_id)
-                )
+                result = await session.execute(select(TargetChannel).where(TargetChannel.user_id == user.telegram_id))
                 old_targets = result.scalars().all()
                 
                 if old_sources or old_targets:
-                    project = Project(
-                        user_id=user.telegram_id,
-                        name="Основной",
-                        check_interval_minutes=60
-                    )
+                    project = Project(user_id=user.telegram_id, name="Основной", check_interval_minutes=60)
                     session.add(project)
                     await session.flush()
-                    
                     for source in old_sources:
                         source.project_id = project.id
                     for target in old_targets:
                         target.project_id = project.id
-                    
                     logger.info(f"Migrated user {user.telegram_id}")
             
             await session.commit()
             logger.info("Migration completed")
         
-        # Добавляем все недостающие колонки
+        # Все миграции
         migrations = [
-            # users
-            ("ALTER TABLE users ADD COLUMN max_projects INTEGER DEFAULT 1", None),
-            ("ALTER TABLE users ADD COLUMN max_sources_per_project INTEGER DEFAULT 3", None),
-            ("ALTER TABLE users ADD COLUMN trial_ends_at TIMESTAMP", None),
-            ("ALTER TABLE users ADD COLUMN subscription_active BOOLEAN DEFAULT FALSE", None),
-            ("ALTER TABLE users ADD COLUMN subscription_ends_at TIMESTAMP", None),
-            ("ALTER TABLE users ADD COLUMN tariff TEXT DEFAULT 'trial'", None),
-            ("ALTER TABLE users ADD COLUMN min_post_interval_minutes INTEGER DEFAULT 120", None),
-            ("ALTER TABLE users ADD COLUMN min_check_interval_minutes INTEGER DEFAULT 60", None),
-            ("ALTER TABLE users ADD COLUMN last_trial_warning_sent TIMESTAMP", None),
-            ("ALTER TABLE users ADD COLUMN last_subscription_warning_sent TIMESTAMP", None),
-            # projects
-            ("ALTER TABLE projects ADD COLUMN signature TEXT", None),
-            # source_channels
-            ("ALTER TABLE source_channels ADD COLUMN media_filter TEXT DEFAULT 'all'", None),
-            ("ALTER TABLE source_channels ADD COLUMN remove_original_text BOOLEAN DEFAULT FALSE", None),
-            ("ALTER TABLE source_channels ADD COLUMN max_video_duration INTEGER", None),
-            # target_channels
-            ("ALTER TABLE target_channels ADD COLUMN platform TEXT DEFAULT 'telegram'", None),
-            ("ALTER TABLE target_channels ADD COLUMN vk_token TEXT", None),
-            ("ALTER TABLE target_channels ADD COLUMN vk_group_id BIGINT", None),
-            ("ALTER TABLE target_channels ADD COLUMN vk_group_name TEXT", None),
-            # post_queue
-            ("ALTER TABLE post_queue ADD COLUMN platform TEXT DEFAULT 'telegram'", None),
-            # parsed_posts
-            ("ALTER TABLE parsed_posts ADD COLUMN project_id INTEGER REFERENCES projects(id)", None),
+            "ALTER TABLE users ADD COLUMN max_projects INTEGER DEFAULT 1",
+            "ALTER TABLE users ADD COLUMN max_sources_per_project INTEGER DEFAULT 3",
+            "ALTER TABLE users ADD COLUMN trial_ends_at TIMESTAMP",
+            "ALTER TABLE users ADD COLUMN subscription_active BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN subscription_ends_at TIMESTAMP",
+            "ALTER TABLE users ADD COLUMN tariff TEXT DEFAULT 'trial'",
+            "ALTER TABLE users ADD COLUMN min_post_interval_minutes INTEGER DEFAULT 120",
+            "ALTER TABLE users ADD COLUMN min_check_interval_minutes INTEGER DEFAULT 60",
+            "ALTER TABLE users ADD COLUMN last_trial_warning_sent TIMESTAMP",
+            "ALTER TABLE users ADD COLUMN last_subscription_warning_sent TIMESTAMP",
+            "ALTER TABLE projects ADD COLUMN signature TEXT",
+            "ALTER TABLE source_channels ADD COLUMN media_filter TEXT DEFAULT 'all'",
+            "ALTER TABLE source_channels ADD COLUMN remove_original_text BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE source_channels ADD COLUMN max_video_duration INTEGER",
+            "ALTER TABLE target_channels ADD COLUMN platform TEXT DEFAULT 'telegram'",
+            "ALTER TABLE target_channels ADD COLUMN vk_token TEXT",
+            "ALTER TABLE target_channels ADD COLUMN vk_group_id BIGINT",
+            "ALTER TABLE target_channels ADD COLUMN vk_group_name TEXT",
+            "ALTER TABLE post_queue ADD COLUMN platform TEXT DEFAULT 'telegram'",
+            "ALTER TABLE published_posts ADD COLUMN platform TEXT DEFAULT 'telegram'",
+            "ALTER TABLE parsed_posts ADD COLUMN project_id INTEGER REFERENCES projects(id)",
         ]
         
-        for sql, _ in migrations:
+        for sql in migrations:
             try:
                 await session.execute(text(sql))
             except:
                 pass
         
-        # Заполняем project_id в parsed_posts
         try:
-            await session.execute(text("""
-                UPDATE parsed_posts SET project_id = (
-                    SELECT project_id FROM source_channels WHERE source_channels.id = parsed_posts.source_channel_id
-                ) WHERE project_id IS NULL
-            """))
+            await session.execute(text("UPDATE parsed_posts SET project_id = (SELECT project_id FROM source_channels WHERE source_channels.id = parsed_posts.source_channel_id) WHERE project_id IS NULL"))
         except:
             pass
         
-        # Устанавливаем триал для существующих пользователей
         try:
             await session.execute(text("UPDATE users SET trial_ends_at = datetime(created_at, '+5 days') WHERE trial_ends_at IS NULL"))
         except:
@@ -126,7 +103,6 @@ async def migrate_to_projects():
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
     await migrate_to_projects()
     
     async with AsyncSessionLocal() as session:
@@ -142,7 +118,7 @@ async def init_db():
             )
             session.add(admin)
             await session.commit()
-            logger.info(f"Admin created")
+            logger.info("Admin created")
         
         result = await session.execute(select(Project).where(Project.user_id == Config.ADMIN_ID).order_by(Project.id))
         if not result.scalars().all():
@@ -156,9 +132,7 @@ async def is_post_parsed(project_id: int, post_url: str) -> bool:
     if cache_key in parsed_urls:
         return True
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(ParsedPost).where(ParsedPost.project_id == project_id, ParsedPost.post_url == post_url)
-        )
+        result = await session.execute(select(ParsedPost).where(ParsedPost.project_id == project_id, ParsedPost.post_url == post_url))
         exists = result.scalar_one_or_none() is not None
         if exists:
             parsed_urls[cache_key] = True
@@ -169,9 +143,7 @@ async def mark_post_parsed(project_id: int, source_channel_id: int, post_url: st
     cache_key = f"{project_id}:{post_url}"
     parsed_urls[cache_key] = True
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(ParsedPost).where(ParsedPost.project_id == project_id, ParsedPost.post_url == post_url)
-        )
+        result = await session.execute(select(ParsedPost).where(ParsedPost.project_id == project_id, ParsedPost.post_url == post_url))
         if result.scalar_one_or_none():
             return
         post = ParsedPost(project_id=project_id, source_channel_id=source_channel_id, post_url=post_url)
@@ -194,23 +166,17 @@ async def get_active_projects():
 
 async def get_user_projects(telegram_id: int):
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Project).where(Project.user_id == telegram_id, Project.is_active == True)
-        )
+        result = await session.execute(select(Project).where(Project.user_id == telegram_id, Project.is_active == True))
         return result.scalars().all()
 
 
 async def get_project_sources(project_id: int):
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(SourceChannel).where(SourceChannel.project_id == project_id, SourceChannel.is_active == True)
-        )
+        result = await session.execute(select(SourceChannel).where(SourceChannel.project_id == project_id, SourceChannel.is_active == True))
         return result.scalars().all()
 
 
 async def get_project_target(project_id: int):
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(TargetChannel).where(TargetChannel.project_id == project_id)
-        )
+        result = await session.execute(select(TargetChannel).where(TargetChannel.project_id == project_id))
         return result.scalar_one_or_none()

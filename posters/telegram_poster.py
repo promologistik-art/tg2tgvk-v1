@@ -46,21 +46,18 @@ class TelegramPoster:
             
             post_data = queue_item.post_data
             
-            # Удаление текста если настроено
             remove_text = post_data.get("remove_original_text", False)
             if remove_text:
                 caption = ""
             else:
                 caption = clean_caption(post_data.get("text", ""))
             
-            # Добавляем подпись
             if signature:
                 if caption:
                     caption += f"\n\n{signature}"
                 else:
                     caption = signature
             
-            # Источник если включено
             if Config.SHOW_SOURCE_SIGNATURE:
                 source = post_data.get("source_username", "")
                 if source:
@@ -72,21 +69,18 @@ class TelegramPoster:
             media_path = post_data.get("media_path")
             media_type = post_data.get("media_type")
             
-            # ОТЛАДОЧНЫЙ ЛОГ
-            logger.info(f"📤 Publishing post {queue_item.id}: media_path={media_path}, exists={os.path.exists(media_path) if media_path else 'N/A'}, media_type={media_type}, caption_len={len(caption) if caption else 0}")
-            
-            # ЗАЩИТА: не публикуем пустые посты
+            # Не публикуем пустые посты
             if not caption and not (media_path and os.path.exists(media_path)):
-                logger.warning(f"⚠️ Empty post {queue_item.id} (no text and no media)")
-                await self._mark_failed(queue_item, "Empty post")
+                if remove_text:
+                    await self._mark_failed(queue_item, "Текст удалён, медиа нет")
+                else:
+                    await self._mark_failed(queue_item, "Нет текста и медиа")
                 return False
             
-            # Определяем parse_mode
             parse_mode = None
             if caption and ("<a href=" in caption or "<b>" in caption or "<i>" in caption):
                 parse_mode = "HTML"
             
-            # Отправка с медиа
             if media_path and os.path.exists(media_path):
                 try:
                     with open(media_path, "rb") as f:
@@ -135,10 +129,9 @@ class TelegramPoster:
                         except:
                             pass
                     
-                    await self._mark_failed(queue_item, str(e)[:200])
+                    await self._mark_failed(queue_item, f"Ошибка Telegram: {str(e)[:50]}")
                     return False
             
-            # Отправка только текста
             elif caption:
                 try:
                     await self.bot.send_message(chat_id=real_chat_id, text=caption, parse_mode=parse_mode, disable_web_page_preview=True)
@@ -152,15 +145,15 @@ class TelegramPoster:
                             return True
                         except:
                             pass
-                    await self._mark_failed(queue_item, str(e)[:200])
+                    await self._mark_failed(queue_item, f"Ошибка Telegram: {str(e)[:50]}")
                     return False
             
-            await self._mark_failed(queue_item, "Empty post")
+            await self._mark_failed(queue_item, "Пустой пост")
             return False
             
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            await self._mark_failed(queue_item, str(e)[:200])
+            await self._mark_failed(queue_item, f"Ошибка: {str(e)[:80]}")
             return False
 
     async def _mark_published(self, queue_item: PostQueue):

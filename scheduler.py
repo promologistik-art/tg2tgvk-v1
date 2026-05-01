@@ -162,7 +162,6 @@ class Scheduler:
                         if not post.get("has_media") or post.get("media_type") != "video":
                             continue
                     
-                    # Пропускаем рекламу
                     if post.get("is_advertisement", False):
                         skipped_ads += 1
                         continue
@@ -182,7 +181,6 @@ class Scheduler:
                     
                     score, is_fallback = calculate_score(post, source.criteria, post_time)
                     
-                    # Пропускаем fallback-посты (не прошедшие критерии)
                     if is_fallback:
                         continue
                     
@@ -191,17 +189,13 @@ class Scheduler:
                         best_post = post
                 
                 if best_post:
-                    # Проверяем, что пост имеет контент
                     has_text = bool(best_post.get("text", "").strip())
                     has_media = best_post.get("has_media") and best_post.get("media_url")
                     
                     if not has_text and not has_media:
-                        logger.warning(f"⚠️ Skipping empty post from @{source.channel_username}")
                         continue
                     
-                    # Если текст удаляется, но медиа нет — пропускаем
                     if source.remove_original_text and not has_media:
-                        logger.warning(f"⚠️ Skipping text-only post (text removed) from @{source.channel_username}")
                         continue
                     
                     logger.info(f"🏆 Selected from @{source.channel_username}: score={best_score}")
@@ -217,9 +211,7 @@ class Scheduler:
                         if await scraper.download_media(best_post["media_url"], media_path):
                             best_post["media_path"] = media_path
                         else:
-                            # Медиа не скачалось — если текст удалён, пропускаем
                             if source.remove_original_text:
-                                logger.warning(f"⚠️ Media download failed and text removed, skipping")
                                 continue
                     
                     posts_to_publish.append(best_post)
@@ -231,10 +223,6 @@ class Scheduler:
                             .values(last_parsed=datetime.utcnow(), last_post_url=best_post["url"])
                         )
                         await session.commit()
-                else:
-                    logger.info(f"😴 @{source.channel_username}: no suitable posts")
-        
-        logger.info(f"📊 Skipped: {skipped_ads} ads")
         
         if posts_to_publish:
             logger.info(f"📤 Found {len(posts_to_publish)} posts")
@@ -253,19 +241,23 @@ class Scheduler:
             else:
                 next_time = current_time
             
-            if not (project.active_hours_start == 0 and project.active_hours_end == 24):
-                if next_time.hour < project.active_hours_start:
-                    next_time = next_time.replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
-                elif next_time.hour >= project.active_hours_end:
-                    next_time = (next_time + timedelta(days=1)).replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
-            
             interval_minutes = max(int(project.post_interval_hours * 60), user.min_post_interval_minutes, Config.MIN_POST_INTERVAL_MINUTES)
+            
+            # Округляем время до ближайшего слота
+            if project.active_hours_start > 0:
+                start_total = project.active_hours_start * 60
+                current_total = next_time.hour * 60 + next_time.minute
+                if current_total >= start_total:
+                    slots = (current_total - start_total) // interval_minutes
+                    next_time = next_time.replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0) + timedelta(minutes=slots * interval_minutes)
+                    if next_time < current_time:
+                        next_time = next_time + timedelta(minutes=interval_minutes)
+                else:
+                    next_time = next_time.replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
             
             for i, post in enumerate(posts_to_publish):
                 if i > 0:
                     next_time = next_time + timedelta(minutes=interval_minutes)
-                    if project.active_hours_end != 24 and next_time.hour >= project.active_hours_end:
-                        next_time = (next_time + timedelta(days=1)).replace(hour=project.active_hours_start, minute=0, second=0, microsecond=0)
                 
                 utc_time = next_time - timedelta(hours=3)
                 

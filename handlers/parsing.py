@@ -7,36 +7,26 @@ from database import AsyncSessionLocal, clear_parsed_cache
 from models import Project, PostQueue, SourceChannel, ParsedPost
 from utils import format_number
 from .utils import require_project, get_sources_count, get_project_target, is_admin
+from config import Config
 
 logger = logging.getLogger(__name__)
 
 
 async def reset_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сбросить историю спарсенных постов для текущего проекта."""
     project = await require_project(update, context)
-    
     if not project:
         return
     
     async with AsyncSessionLocal() as session:
-        # Удаляем все parsed_posts для этого проекта
-        await session.execute(
-            delete(ParsedPost).where(ParsedPost.project_id == project.id)
-        )
+        await session.execute(delete(ParsedPost).where(ParsedPost.project_id == project.id))
         await session.commit()
-        
-        # Очищаем кэш
         await clear_parsed_cache()
     
-    await update.message.reply_text(
-        f"✅ История спарсенных постов для проекта «{project.name}» очищена.\n"
-        f"Теперь /parse найдёт все посты заново."
-    )
+    await update.message.reply_text(f"✅ История для проекта «{project.name}» очищена.\nТеперь /parse найдёт все посты заново.")
 
 
 async def parse_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project = await require_project(update, context)
-    
     if not project:
         return
     
@@ -79,7 +69,7 @@ async def parse_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📊 Новых постов не найдено\n"
                 f"📊 Всего спарсено сегодня: {updated.posts_parsed_today}\n\n"
                 f"💡 Возможные причины:\n"
-                f"• Все посты уже были спарсены — /reset_history\n"
+                f"• Все посты уже спарсены — /reset_history\n"
                 f"• Посты не прошли критерии\n"
                 f"• В каналах нет новых постов\n\n"
                 f"/queue — проверить очередь"
@@ -90,15 +80,12 @@ async def parse_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def queue_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project = await require_project(update, context)
-    
     if not project:
         return
     
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(PostQueue).where(
-                PostQueue.project_id == project.id
-            ).order_by(PostQueue.scheduled_time.desc()).limit(15)
+            select(PostQueue).where(PostQueue.project_id == project.id).order_by(PostQueue.scheduled_time.desc()).limit(15)
         )
         items = result.scalars().all()
     
@@ -108,7 +95,6 @@ async def queue_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = f"📬 <b>Очередь публикации «{project.name}»</b>\n\n"
     
-    # Правильное отображение интервала
     interval_minutes = int(project.post_interval_hours * 60)
     if interval_minutes < 60:
         text += f"⏰ Интервал: каждые {interval_minutes} мин (мин. {Config.MIN_POST_INTERVAL_MINUTES} мин)\n\n"
@@ -126,15 +112,18 @@ async def queue_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         text += f"{status_icon} {scheduled_msk.strftime('%d.%m.%Y %H:%M')} МСК\n"
         text += f"   📡 @{post_data.get('source_username', '?')}\n"
-        text += f"   👁 {format_number(post_data.get('views', 0))} | ❤️ {format_number(post_data.get('reactions', 0))}\n\n"
+        text += f"   👁 {format_number(post_data.get('views', 0))} | ❤️ {format_number(post_data.get('reactions', 0))}\n"
+        
+        if item.status == "failed" and item.error_message:
+            text += f"   ⚠️ {item.error_message[:100]}\n"
+        
+        text += "\n"
     
     await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def post_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Опубликовать следующий пост из очереди немедленно."""
     project = await require_project(update, context)
-    
     if not project:
         return
     
@@ -144,10 +133,7 @@ async def post_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(PostQueue).where(
-                PostQueue.project_id == project.id,
-                PostQueue.status == "pending"
-            ).order_by(PostQueue.scheduled_time).limit(1)
+            select(PostQueue).where(PostQueue.project_id == project.id, PostQueue.status == "pending").order_by(PostQueue.scheduled_time).limit(1)
         )
         queue_item = result.scalar_one_or_none()
         
@@ -161,7 +147,6 @@ async def post_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         msg = await update.message.reply_text("🚀 Публикую пост...")
-        
         success = await poster.publish_post(queue_item)
         
         if success:
@@ -182,51 +167,39 @@ async def post_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def clear_old_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удалить все pending посты из очереди (админ)."""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Нет доступа")
         return
     
     msg = await update.message.reply_text("🧹 Очищаю pending посты...")
-    
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(PostQueue).where(PostQueue.status == "pending")
-        )
+        result = await session.execute(select(PostQueue).where(PostQueue.status == "pending"))
         items = result.scalars().all()
-        
         deleted = len(items)
         for item in items:
             await session.delete(item)
-        
         await session.commit()
-    
-    await msg.edit_text(f"✅ Удалено {deleted} pending постов из очереди")
+    await msg.edit_text(f"✅ Удалено {deleted} pending постов")
 
 
 async def clear_failed_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удалить все failed посты из очереди (админ)."""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Нет доступа")
         return
     
     msg = await update.message.reply_text("🧹 Очищаю failed посты...")
-    
     async with AsyncSessionLocal() as session:
         await session.execute(delete(PostQueue).where(PostQueue.status == "failed"))
         await session.commit()
-    
-    await msg.edit_text("✅ Failed посты удалены из очереди")
+    await msg.edit_text("✅ Failed посты удалены")
 
 
 async def clear_all_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удалить ВООБЩЕ ВСЕ посты из очереди (админ)."""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Нет доступа")
         return
     
     msg = await update.message.reply_text("🧹 Удаляю всю очередь...")
-    
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(PostQueue))
         items = result.scalars().all()
@@ -234,31 +207,20 @@ async def clear_all_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for item in items:
             await session.delete(item)
         await session.commit()
-    
-    await msg.edit_text(f"✅ Удалено {deleted} постов из очереди (все статусы)")
+    await msg.edit_text(f"✅ Удалено {deleted} постов из очереди")
 
 
 async def clear_project_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удалить все посты из очереди для текущего проекта."""
     project = await require_project(update, context)
-    
     if not project:
         return
     
     msg = await update.message.reply_text(f"🧹 Очищаю очередь проекта «{project.name}»...")
-    
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(PostQueue).where(PostQueue.project_id == project.id)
-        )
+        result = await session.execute(select(PostQueue).where(PostQueue.project_id == project.id))
         items = result.scalars().all()
         deleted = len(items)
         for item in items:
             await session.delete(item)
         await session.commit()
-    
     await msg.edit_text(f"✅ Удалено {deleted} постов из очереди проекта «{project.name}»")
-
-
-# Импорт Config для отображения интервала
-from config import Config

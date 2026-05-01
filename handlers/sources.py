@@ -264,7 +264,6 @@ async def remove_text_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         session.add(channel)
         await session.commit()
     
-    # Формируем красивое описание
     filter_text = {"all": "все", "photo_only": "только фото", "video_only": "только видео"}.get(media_filter, "все")
     
     criteria_parts = []
@@ -293,15 +292,23 @@ async def remove_text_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     sources_count = await get_sources_count(project_id)
     target_channel = await get_project_target(project_id)
-    if sources_count == 1 and target_channel:
-        await query.message.reply_text(
-            f"✅ <b>Проект «{project_name}» готов к работе!</b>\n\n"
-            f"• /set_interval — настроить частоту парсинга\n"
-            f"• /set_post_interval — интервал публикаций\n"
-            f"• /parse — запустить парсинг"
-            f"• /add_source — добавить ещё источник\n",
-            parse_mode="HTML"
-        )
+    
+    if target_channel:
+        if sources_count == 1:
+            await query.message.reply_text(
+                f"✅ <b>Проект «{project_name}» готов к работе!</b>\n\n"
+                f"• /set_interval — настроить частоту парсинга\n"
+                f"• /set_post_interval — интервал публикаций\n"
+                f"• /set_signature — добавить подпись\n"
+                f"• /parse — запустить парсинг\n"
+                f"• /add_source — добавить ещё источник",
+                parse_mode="HTML"
+            )
+        else:
+            await query.message.reply_text(
+                f"✅ Источник добавлен! Всего источников: {sources_count}",
+                parse_mode="HTML"
+            )
     
     return ConversationHandler.END
 

@@ -185,7 +185,6 @@ class TelegramPoster:
             published = PublishedPost(
                 project_id=queue_item.project_id,
                 target_channel_id=queue_item.target_channel_id,
-                platform="telegram",
                 source_channel_username=queue_item.post_data.get("source_username", ""),
                 post_url=queue_item.post_data.get("url", ""),
                 post_data=queue_item.post_data

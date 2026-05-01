@@ -66,6 +66,10 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     action = query.data
     
+    # admin_back обрабатывается отдельным хендлером
+    if action == "admin_back":
+        return
+    
     if action == "admin_users_list":
         await show_admin_users(query)
     elif action == "admin_tariff_menu":

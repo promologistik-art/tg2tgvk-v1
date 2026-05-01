@@ -31,7 +31,7 @@ from .settings import (
 )
 from .stats import status, project_stats
 from .parsing import parse_now, queue_status, post_now, clear_old_queue, clear_failed_queue, reset_history
-с
+
 from .test import test_scraper, debug_reactions
 from .utils import setup_bot_commands
 

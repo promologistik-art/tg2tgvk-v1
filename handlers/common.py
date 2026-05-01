@@ -62,34 +62,71 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     
-    welcome = f"👋 Привет, {user.first_name or 'пользователь'}!\n\nЯ бот для автопостинга из Telegram-каналов в Telegram и VK.\n\n"
+    welcome = f"👋 Привет, {user.first_name or 'пользователь'}!\n\n"
+    welcome += "Я бот для автоматического парсинга и публикации постов из Telegram-каналов.\n\n"
     
-    if user.id != Config.ADMIN_ID:
-        has_access, msg, _ = await check_user_access(user.id)
-        if not has_access:
-            welcome += f"❌ {msg}\n\n"
+    if db_user.is_admin:
+        welcome += "👑 <b>Режим администратора</b>\n\n"
+    elif not has_project:
+        welcome += "🚀 Для начала работы создайте проект: /my_projects\n\n"
     
-    if not has_project:
-        welcome += "🚀 Создайте проект: /my_projects\n\n"
-    
-    welcome += "📋 Команды: /my_projects, /add_source, /add_target, /status, /help"
+    welcome += (
+        "📋 Основные команды:\n"
+        "/my_projects — мои проекты\n"
+        "/add_source — добавить источник\n"
+        "/add_target — добавить целевой канал\n"
+        "/status — статистика\n"
+        "/help — все команды"
+    )
     
     await update.message.reply_text(welcome, parse_mode="HTML")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
     text = (
-        "📚 <b>Команды</b>\n\n"
-        "<b>Проекты:</b> /my_projects\n"
-        "<b>Источники:</b> /add_source, /my_sources\n"
-        "<b>Цели:</b> /add_target, /my_targets\n"
-        "<b>Настройки:</b> /set_interval, /set_post_interval, /set_signature\n"
-        "<b>Управление:</b> /status, /parse, /queue, /postnow, /reset_history\n"
+        "📚 <b>Справка по командам</b>\n\n"
+        "<b>Проекты:</b>\n"
+        "/my_projects - список ваших проектов\n\n"
+        "<b>Источники:</b>\n"
+        "/add_source - добавить канал для парсинга\n"
+        "/my_sources - список источников\n\n"
+        "<b>Целевые каналы:</b>\n"
+        "/add_target - добавить канал для публикации\n"
+        "/my_targets - список целевых каналов\n\n"
+        "<b>Настройки:</b>\n"
+        "/set_interval - интервал парсинга\n"
+        "/set_post_interval - интервал публикации\n"
+        "/set_signature - подпись под постами\n\n"
+        "<b>Управление:</b>\n"
+        "/status - общая статистика\n"
+        "/project_stats - статистика по проекту\n"
+        "/parse - запустить парсинг сейчас\n"
+        "/queue - очередь публикации\n"
+        "/postnow - опубликовать следующий пост немедленно\n"
+        "/reset_history - сбросить историю спарсенных постов\n"
     )
-    if await is_admin(update.effective_user.id):
-        text += "\n<b>Админ:</b> /admin"
+    
+    if await is_admin(user_id):
+        text += (
+            "\n<b>Админские команды:</b>\n"
+            "/admin — админ-панель\n"
+            "/admin_set_tariff — установить тариф\n"
+            "/admin_extend_trial — продлить триал\n"
+            "/broadcast — рассылка\n"
+            "/clear_queue — очистить очередь\n"
+            "/clear_failed — очистить failed\n"
+            "/clear_all — очистить всю очередь\n"
+            "/clear_project — очистить очередь проекта\n"
+        )
     else:
-        text += "\n<b>Тарифы:</b> Базовый 290₽, Стандарт 590₽, PRO 990₽"
+        text += (
+            "\n<b>💎 Тарифы:</b>\n"
+            "• Базовый — 290 ₽/мес (1 проект, 3 источника, постинг от 2ч)\n"
+            "• Стандарт — 590 ₽/мес (3 проекта, 5 источников, постинг от 1ч)\n"
+            "• PRO — 990 ₽/мес (10 проектов, 10 источников, постинг от 30мин)\n"
+        )
     
     admin_username = Config.ADMIN_USERNAME or "admin"
     text += f"\n\n📲 <a href='https://t.me/{admin_username}'>Написать админу</a>"
@@ -99,5 +136,5 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("❌ Отменено")
+    await update.message.reply_text("❌ Действие отменено")
     return ConversationHandler.END

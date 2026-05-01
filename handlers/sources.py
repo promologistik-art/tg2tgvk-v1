@@ -47,22 +47,15 @@ async def add_source_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_source_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = extract_channel_username(update.message.text)
     if not username:
-        await update.message.reply_text("❌ Не удалось распознать username. Попробуйте ещё раз.")
+        await update.message.reply_text("❌ Не удалось распознать username.")
         return AWAITING_SOURCE_USERNAME
-    
-    logger.info(f"Checking channel: @{username}")
     
     async with TelegramScraper() as scraper:
         info = await scraper.get_channel_info(username)
     
     if not info:
-        await update.message.reply_text(
-            "❌ Канал не найден или не является публичным.\n"
-            "Попробуйте другой канал или проверьте правильность username."
-        )
+        await update.message.reply_text("❌ Канал не найден или не является публичным.")
         return AWAITING_SOURCE_USERNAME
-    
-    logger.info(f"Channel found: @{username} - {info['title']}")
     
     context.user_data['temp_source'] = {
         'username': username,
@@ -80,9 +73,7 @@ async def add_source_username(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]
     
     await update.message.reply_text(
-        f"✅ Канал: @{username}\n"
-        f"📝 Название: {info['title']}\n\n"
-        f"Выберите критерии отбора:",
+        f"✅ Канал: @{username}\n📝 Название: {info['title']}\n\nВыберите критерии отбора:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return AWAITING_CRITERIA
@@ -96,15 +87,12 @@ async def add_source_criteria(update: Update, context: ContextTypes.DEFAULT_TYPE
     temp = context.user_data.get('temp_source')
     
     if not temp:
-        await query.edit_message_text("❌ Ошибка: данные не найдены. Начните заново с /add_source")
+        await query.edit_message_text("❌ Ошибка: данные не найдены.")
         return ConversationHandler.END
-    
-    logger.info(f"Criteria choice: {choice} for @{temp['username']}")
     
     if choice == "custom":
         await query.edit_message_text(
-            "📊 <b>Настройка критериев</b>\n\n"
-            "Введите минимальное количество просмотров (0 = не учитывать):",
+            "📊 <b>Настройка критериев</b>\n\nВведите минимальное количество просмотров (0 = не учитывать):",
             parse_mode="HTML"
         )
         context.user_data['awaiting_criteria'] = 'views'
@@ -126,8 +114,7 @@ async def add_source_criteria(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
         
         await query.edit_message_text(
-            f"✅ Критерии выбраны\n\n"
-            f"Теперь выберите тип контента для @{temp['username']}:",
+            f"✅ Критерии выбраны\n\nТеперь выберите тип контента для @{temp['username']}:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
@@ -173,8 +160,7 @@ async def criteria_reactions_input(update: Update, context: ContextTypes.DEFAULT
     ]
     
     await update.message.reply_text(
-        f"✅ Критерии сохранены\n\n"
-        f"Теперь выберите тип контента:",
+        f"✅ Критерии сохранены\n\nТеперь выберите тип контента:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML"
     )
@@ -182,7 +168,6 @@ async def criteria_reactions_input(update: Update, context: ContextTypes.DEFAULT
 
 
 async def media_filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора типа контента."""
     query = update.callback_query
     await query.answer()
     
@@ -197,8 +182,7 @@ async def media_filter_callback(update: Update, context: ContextTypes.DEFAULT_TY
         ]
         
         await query.edit_message_text(
-            f"🎬 <b>Ограничение по длительности видео:</b>\n\n"
-            f"Выберите максимальную длительность:",
+            f"🎬 <b>Ограничение по длительности видео:</b>\n\nВыберите максимальную длительность:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
@@ -210,7 +194,6 @@ async def media_filter_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def duration_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора длительности видео."""
     query = update.callback_query
     await query.answer()
     
@@ -222,7 +205,6 @@ async def duration_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask_remove_text(target, context):
-    """Спрашиваем про удаление текста."""
     keyboard = [
         [InlineKeyboardButton("✅ Оставлять текст", callback_data="text_keep")],
         [InlineKeyboardButton("❌ Удалять текст", callback_data="text_remove")],
@@ -244,7 +226,6 @@ async def ask_remove_text(target, context):
 
 
 async def remove_text_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохранение всех настроек."""
     query = update.callback_query
     await query.answer()
     
@@ -282,12 +263,19 @@ async def remove_text_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         session.add(channel)
         await session.commit()
-        logger.info(f"Added source @{temp['username']} to project {temp['project_id']}")
     
+    # Формируем красивое описание
     filter_text = {"all": "все", "photo_only": "только фото", "video_only": "только видео"}.get(media_filter, "все")
     
+    criteria_parts = []
+    if criteria.get('min_views'):
+        criteria_parts.append(f"👁 от {criteria['min_views']}")
+    if criteria.get('min_reactions'):
+        criteria_parts.append(f"❤️ от {criteria['min_reactions']}")
+    criteria_display = ", ".join(criteria_parts) if criteria_parts else "без критериев"
+    
     text_parts = [f"✅ Канал @{temp['username']} добавлен!"]
-    text_parts.append(f"📋 Критерии: {criteria if criteria else 'без критериев'}")
+    text_parts.append(f"📋 Критерии: {criteria_display}")
     text_parts.append(f"📷 Контент: {filter_text}")
     if max_video_duration:
         text_parts.append(f"🎬 Длительность видео: до {max_video_duration} сек")
@@ -326,20 +314,14 @@ async def my_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(SourceChannel)
-            .where(SourceChannel.project_id == project.id)
-            .order_by(SourceChannel.added_at.desc())
+            select(SourceChannel).where(SourceChannel.project_id == project.id).order_by(SourceChannel.added_at.desc())
         )
         sources = result.scalars().all()
-        
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one()
     
     if not sources:
-        await update.message.reply_text(
-            f"📭 В проекте «{project.name}» нет источников.\n"
-            f"Добавьте: /add_source"
-        )
+        await update.message.reply_text(f"📭 В проекте «{project.name}» нет источников.\nДобавьте: /add_source")
         return
     
     text = f"📥 <b>Источники «{project.name}»</b> ({len(sources)} / {user.max_sources_per_project})\n\n"
@@ -348,13 +330,13 @@ async def my_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filter_names = {"all": "все", "photo_only": "только фото", "video_only": "только видео"}
     
     for src in sources:
-        criteria_text = []
+        criteria_parts = []
         if src.criteria:
             if "min_views" in src.criteria:
-                criteria_text.append(f"👁 ≥{src.criteria['min_views']}")
+                criteria_parts.append(f"👁 ≥{src.criteria['min_views']}")
             if "min_reactions" in src.criteria:
-                criteria_text.append(f"❤️ ≥{src.criteria['min_reactions']}")
-        criteria_str = ", ".join(criteria_text) if criteria_text else "без критериев"
+                criteria_parts.append(f"❤️ ≥{src.criteria['min_reactions']}")
+        criteria_str = ", ".join(criteria_parts) if criteria_parts else "без критериев"
         
         status_icon = "✅" if src.is_active else "❌"
         text += f"{status_icon} @{src.channel_username}\n"
@@ -367,26 +349,16 @@ async def my_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"   🕐 {src.last_parsed.strftime('%d.%m.%Y %H:%M')}\n"
         text += "\n"
         
-        keyboard.append([
-            InlineKeyboardButton(f"❌ Удалить @{src.channel_username}", callback_data=f"del_source_{src.id}")
-        ])
+        keyboard.append([InlineKeyboardButton(f"❌ Удалить @{src.channel_username}", callback_data=f"del_source_{src.id}")])
     
-    await update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
-        parse_mode="HTML"
-    )
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None, parse_mode="HTML")
 
 
 async def delete_source_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     source_id = int(query.data.replace("del_source_", ""))
-    
     async with AsyncSessionLocal() as session:
         await session.execute(delete(SourceChannel).where(SourceChannel.id == source_id))
         await session.commit()
-        logger.info(f"Deleted source {source_id}")
-    
     await query.edit_message_text("✅ Источник удалён")

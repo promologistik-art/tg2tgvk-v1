@@ -174,12 +174,9 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project_name))
     
     # ============ Callback Handlers ============
-    # ВАЖНО: admin_back должен быть ДО admin_callback!
     
     app.add_handler(CallbackQueryHandler(admin_back_callback, pattern="^admin_back$"))
-    
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(admin_users_list|admin_tariff_menu|admin_toggle_source|admin_backup_create|admin_backup_list|admin_export|admin_report|admin_diagnose|admin_clear_queue|admin_clear_failed|admin_broadcast|admin_set_tariff|admin_extend_trial|admin_deactivate|admin_activate|tariff_set_|user_tariff_|extend_user_|deactivate_user_|activate_user_|user_manage_|tariff_for_|set_tariff_)"))
-    
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
     app.add_handler(CallbackQueryHandler(projects_callback, pattern="^(create_project|select_project_|delete_project_|confirm_delete_|cancel_delete|stats_project_)"))
     app.add_handler(CallbackQueryHandler(back_to_projects_callback, pattern="^back_to_projects$"))
     app.add_handler(CallbackQueryHandler(delete_source_callback, pattern="^del_source_"))
